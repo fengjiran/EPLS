@@ -596,6 +596,7 @@ def training_function(pretrain_lr=0.13,
     print '... loading the data'
 
     [(train_set_x, train_set_y), (test_set_x, test_set_y)] = load_cifar10.load_cifar_10()
+
     temp_x = np.reshape(train_set_x, (-1, 3, 32, 32))
     temp_x = np.transpose(temp_x, (0, 3, 2, 1))
 
@@ -848,8 +849,7 @@ def training_function(pretrain_lr=0.13,
                             # improve patience if loss improvement is good
                             # enough
                             if (this_validation_loss < best_validation_loss * improvement_threshold):
-                                patience = max(
-                                    patience, iter * patience_increase)
+                                patience = max(patience, iter * patience_increase)
 
                             # save best validation score and iteration number
                             best_validation_loss = this_validation_loss
@@ -897,7 +897,7 @@ def training_function(pretrain_lr=0.13,
 
 if __name__ == '__main__':
 
-    l2_reg = 0.0002  # weight of weight decay
+    l2_reg = 0.0001  # weight of weight decay
     finetune_lr = [0.01, 0.002, 0.0004, 8e-5, 1.6e-5]
 
     training_function(pretrain_lr=0.005,  # 0.15
