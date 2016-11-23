@@ -99,7 +99,7 @@ class HiddenLayer(object):
                               else activation(lin_output_mirror)
                               )
 
-    def competitive_epls_scan(self, inhibitor, mini_batch, n_samples):
+    def competitive_epls_scan(self, inhibitor, pretrain_mini_batch, n_samples):
         self.inhibitor = inhibitor
         l2input = T.sqrt(T.sum(self.input ** 2, axis=1))
         input_ = self.input / l2input[:, np.newaxis]
@@ -107,7 +107,8 @@ class HiddenLayer(object):
         l2W = T.sqrt(T.sum(self.W ** 2, axis=0))
         W_ = self.W / l2W
 
-        cosine_sim = T.dot(input_, W_)
+        # cosine_sim = T.dot(input_, W_)
+        cosine_sim = self.output
 
         self.H = (cosine_sim - T.min(cosine_sim)) / (T.max(cosine_sim) - T.min(cosine_sim))
 
@@ -121,7 +122,7 @@ class HiddenLayer(object):
             return outpt
 
         results1, updates1 = theano.scan(fn=compute_abs_competitive_matrix,
-                                         sequences=T.arange(mini_batch),
+                                         sequences=T.arange(pretrain_mini_batch),
                                          outputs_info=T.zeros_like(self.H),
                                          non_sequences=[input_, W_]
                                          )
@@ -138,12 +139,45 @@ class HiddenLayer(object):
             return target
 
         results, updates = theano.scan(fn=set_value_at_position,
-                                       sequences=T.arange(mini_batch),
+                                       sequences=T.arange(pretrain_mini_batch),
                                        outputs_info=T.zeros_like(self.H),
                                        non_sequences=self.H
                                        )
 
-        return 0.5 * T.sum((self.output - results[-1]) ** 2) / mini_batch
+        return 0.5 * T.sum((self.output - results[-1]) ** 2) / pretrain_mini_batch
+
+    def competitive_epls_scan_k(self, inhibitor, pretrain_mini_batch, n_samples, sparsity_rate):
+        self.inhibitor = inhibitor
+        l2input = T.sqrt(T.sum(self.input ** 2, axis=1))
+        input_ = self.input / l2input[:, np.newaxis]
+
+        l2W = T.sqrt(T.sum(self.W ** 2, axis=0))
+        W_ = self.W / l2W
+
+        cosine_sim = T.dot(input_, W_)
+        # cosine_sim = self.output
+        self.H = (cosine_sim - T.min(cosine_sim)) / (T.max(cosine_sim) - T.min(cosine_sim))
+
+        def set_value_at_position(index, target, H):
+            h = H[index]
+            t = target[index]
+            indices = T.argsort(h - self.inhibitor)
+            k = T.floor((1 - sparsity_rate) * H.shape[1]).astype('int32')
+
+            target = T.set_subtensor(target[index], T.set_subtensor(t[indices[-k:]], 1.0))
+
+            delta = 1 / ((1 - sparsity_rate) * n_samples)
+            self.inhibitor = T.set_subtensor(self.inhibitor[indices[-k:]], self.inhibitor[indices[-k:]] + delta)
+
+            return target
+
+        results, updates = theano.scan(fn=set_value_at_position,
+                                       sequences=T.arange(pretrain_mini_batch),
+                                       outputs_info=T.zeros_like(self.H),
+                                       non_sequences=self.H
+                                       )
+
+        return 0.5 * T.sum((self.output - results[-1]) ** 2) / pretrain_mini_batch
 
 
 class LogisticRegression(object):
@@ -397,10 +431,12 @@ class Network_epls(object):
                  n_in,
                  hidden_layer_size,
                  n_out,
+                 pretrain_mini_batch,
                  mini_batch,
                  n_samples,
                  activation,
                  classifier='LR',
+                 sparsity_rate=0.5,
                  params=None
                  ):
         '''
@@ -451,10 +487,16 @@ class Network_epls(object):
                                                  )
 
             # the cost and parameters of EPLS layer
-            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan(self.inhibitor,
-                                                                        mini_batch,
-                                                                        n_samples
-                                                                        )
+            # self.pretrain_cost = self.hiddenLayer.competitive_epls_scan(self.inhibitor,
+            #                                                             mini_batch,
+            #                                                             n_samples
+            #                                                             )
+
+            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
+                                                                          pretrain_mini_batch,
+                                                                          n_samples,
+                                                                          sparsity_rate
+                                                                          )
             self.pretrain_params = self.hiddenLayer.params
 
             # the cost and parameters of classifier layer
@@ -476,10 +518,16 @@ class Network_epls(object):
                                           )
 
             # the cost and parameters of EPLS layer
-            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan(self.inhibitor,
-                                                                        mini_batch,
-                                                                        n_samples
-                                                                        )
+            # self.pretrain_cost = self.hiddenLayer.competitive_epls_scan(self.inhibitor,
+            #                                                             mini_batch,
+            #                                                             n_samples
+            #                                                             )
+
+            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
+                                                                          pretrain_mini_batch,
+                                                                          n_samples,
+                                                                          sparsity_rate
+                                                                          )
 
             self.pretrain_params = self.hiddenLayer.params
 
@@ -493,7 +541,7 @@ class Network_epls(object):
             self.params.extend(self.pretrain_params)
             self.params.extend(self.classifier_params)
 
-    def pretraining_function(self, train_set_x, batch_size, learning_rate):
+    def pretraining_function(self, train_set_x, pretrain_batch_size, learning_rate):
         """
         Generates a function implementing training the EPLS layer.
         """
@@ -514,7 +562,7 @@ class Network_epls(object):
             outputs=[self.pretrain_cost, self.hiddenLayer.output],
             updates=updates,
             givens={
-                self.x: train_set_x[index * batch_size: (index + 1) * batch_size]
+                self.x: train_set_x[index * pretrain_batch_size: (index + 1) * pretrain_batch_size]
             }
         )
 
@@ -581,11 +629,13 @@ def training_function(pretrain_lr=0.13,
                       n_out=10,
                       pretraining_epochs=20,
                       training_epochs=1000,
+                      pretrain_batch_size=1600,
                       batch_size=100,
                       eps=1e-6,
                       classifier='LR',
                       l2_reg=0.,
                       activation=Relu,
+                      sparsity_rate=0.5,
                       continue_train=False
                       ):
     '''
@@ -638,12 +688,14 @@ def training_function(pretrain_lr=0.13,
                        n_in=n_in,
                        hidden_layer_size=hidden_layer_size,
                        n_out=n_out,
+                       pretrain_mini_batch=pretrain_batch_size,
                        mini_batch=batch_size,
                        n_samples=n_samples,
+                       sparsity_rate=sparsity_rate,
                        activation=activation
                        )
 
-    n_train_batches = int(n_samples / batch_size)
+    n_train_batches = int(n_samples / pretrain_batch_size)
 
     #########################
     # PRETRAINING THE MODEL #
@@ -652,7 +704,7 @@ def training_function(pretrain_lr=0.13,
 
     pretraining_fn = net.pretraining_function(
         train_set_x=shared_pretrain_patches,
-        batch_size=batch_size,
+        pretrain_batch_size=pretrain_batch_size,
         learning_rate=pretrain_lr
     )
 
@@ -826,46 +878,61 @@ def training_function(pretrain_lr=0.13,
             done_looping = False
             epoch = 0
 
-            while (epoch < training_epochs) and (not done_looping):
-                print 'training epoch {0}'.format(epoch)
-                epoch = epoch + 1
+            while (epoch < training_epochs):
+                print 'Training epoch {0}'.format(epoch)
+                epoch += 1
                 for minibatch_index in xrange(n_train_batches):
-                    # print 'minibatch index {0}'.format(minibatch_index)
                     minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
                     iter = (epoch - 1) * n_train_batches + minibatch_index
 
-                    if (iter + 1) % validation_frequency == 0:
-                        print 'test...'
-                        validation_losses = test_model(n_test_batches)
-                        this_validation_loss = np.mean(validation_losses)
-                        print 'epoch {0}, minibatch {1}/{2}, validation error {3}%'.format(epoch - 1,
-                                                                                           minibatch_index + 1,
-                                                                                           n_train_batches,
-                                                                                           this_validation_loss * 100.
-                                                                                           )
-                        # if we got the best validation score until now
-                        if this_validation_loss < best_validation_loss:
+                print 'Testing...'
+                validation_losses = test_model(n_test_batches)
+                this_validation_loss = np.mean(validation_losses)
+                print 'Epoch {0}, validation error {1}'.format(epoch - 1, this_validation_loss * 100)
 
-                            # improve patience if loss improvement is good
-                            # enough
-                            if (this_validation_loss < best_validation_loss * improvement_threshold):
-                                patience = max(patience, iter * patience_increase)
+                if this_validation_loss < best_validation_loss:
+                    best_validation_loss = this_validation_loss
 
-                            # save best validation score and iteration number
-                            best_validation_loss = this_validation_loss
-                            best_iter = iter
+            # while (epoch < training_epochs) and (not done_looping):
+            #     print 'training epoch {0}'.format(epoch)
+            #     epoch = epoch + 1
+            #     for minibatch_index in xrange(n_train_batches):
+            #         # print 'minibatch index {0}'.format(minibatch_index)
+            #         minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+            #         iter = (epoch - 1) * n_train_batches + minibatch_index
 
-                            # save the params of the network
-                            save_file = open('params.save', 'wb')
-                            temp = []
-                            for param in net.params:
-                                temp.append(param.get_value(borrow=True))
-                            cPickle.dump(temp, save_file, True)
-                            save_file.close()
+            #         if (iter + 1) % validation_frequency == 0:
+            #             print 'test...'
+            #             validation_losses = test_model(n_test_batches)
+            #             this_validation_loss = np.mean(validation_losses)
+            #             print 'epoch {0}, minibatch {1}/{2}, validation error {3}%'.format(epoch - 1,
+            #                                                                                minibatch_index + 1,
+            #                                                                                n_train_batches,
+            #                                                                                this_validation_loss * 100.
+            #                                                                                )
+            #             # if we got the best validation score until now
+            #             if this_validation_loss < best_validation_loss:
 
-                    if patience <= iter:
-                        done_looping = True
-                        break
+            #                 # improve patience if loss improvement is good
+            #                 # enough
+            #                 if (this_validation_loss < best_validation_loss * improvement_threshold):
+            #                     patience = max(patience, iter * patience_increase)
+
+            #                 # save best validation score and iteration number
+            #                 best_validation_loss = this_validation_loss
+            #                 best_iter = iter
+
+            #                 # save the params of the network
+            #                 save_file = open('params.save', 'wb')
+            #                 temp = []
+            #                 for param in net.params:
+            #                     temp.append(param.get_value(borrow=True))
+            #                 cPickle.dump(temp, save_file, True)
+            #                 save_file.close()
+
+            #         if patience <= iter:
+            #             done_looping = True
+            #             break
 
             # the test accuracy
             acc[b][i] = 1 - best_validation_loss
@@ -897,7 +964,7 @@ def training_function(pretrain_lr=0.13,
 
 if __name__ == '__main__':
 
-    l2_reg = 0.0001  # weight of weight decay
+    l2_reg = 0.0001 / 2  # weight of weight decay
     finetune_lr = [0.01, 0.002, 0.0004, 8e-5, 1.6e-5]
 
     training_function(pretrain_lr=0.005,  # 0.15
@@ -905,13 +972,15 @@ if __name__ == '__main__':
                       n_in=6 * 6 * 3,
                       hidden_layer_size=1600,
                       n_out=10,
-                      pretraining_epochs=50,
-                      training_epochs=1000,
+                      pretraining_epochs=10,
+                      training_epochs=300,
+                      pretrain_batch_size=1600,
                       batch_size=100,
                       eps=1e-6,
                       classifier='LR',
                       l2_reg=l2_reg,
                       activation=Relu,
+                      sparsity_rate=0.9,
                       continue_train=False
                       )
 
