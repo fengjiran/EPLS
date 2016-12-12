@@ -614,8 +614,8 @@ class Network_epls(object):
         validation set, and a function 'test' that computes the error on a 
         batch from the test set.
         """
-        (train_set_x, train_set_y) = datasets[0]
-        (test_set_x, test_set_y) = datasets[1]
+        (train_set_x, train_set_y) = datasets
+        # (test_set_x, test_set_y) = datasets[1]
 
         # compute number of minibatchs for training and testing
         # n_train_batches = int(train_set_x.get_value(borrow=True).shape[0] / batch_size)
@@ -657,12 +657,37 @@ class Network_epls(object):
             name='train'
         )
 
+        # test_score_i = theano.function(
+        #     inputs=[index],
+        #     outputs=self.errors,
+        #     givens={
+        #         self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+        #     },
+        #     name='test'
+        # )
+
+        # # Create a function that scans the entire test set
+        # def test_score(n_batches):
+        #     return [test_score_i(i) for i in xrange(n_batches)]
+
+        return train_fn
+
+    def build_test_function(self, dataset, batch_size):
+        '''
+        Build the function for the testing.
+        The function 'test' that computes the error on a batch from the test set
+        '''
+        (test_set_x, test_set_y) = dataset
+
+        index = T.lscalar('index')
+
         test_score_i = theano.function(
             inputs=[index],
             outputs=self.errors,
             givens={
-                self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
-                self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+                self.x: test_set_x[index * batch_size * 27 * 27:(index + 1) * batch_size * 27 * 27],
+                self.y: test_set_y[index * batch_size:(index + 1) * batch_size]
             },
             name='test'
         )
@@ -671,7 +696,7 @@ class Network_epls(object):
         def test_score(n_batches):
             return [test_score_i(i) for i in xrange(n_batches)]
 
-        return train_fn, test_score
+        return test_score
 
 
 def training_function(pretrain_lr=0.13,
@@ -848,8 +873,8 @@ def training_function(pretrain_lr=0.13,
     # normalizers[normalizers < 1e-8] = 1.
     train_patches /= normalizers
 
-    shared_train_x = load_cifar10.shared_dataset_x(train_patches)
-    shared_train_y = load_cifar10.shared_dataset_y(train_set_y)
+    # shared_train_x = load_cifar10.shared_dataset_x(train_patches)
+    # shared_train_y = load_cifar10.shared_dataset_y(train_set_y)
 
     temp_x = np.reshape(test_set_x, (-1, 3, 32, 32))
     temp_x = np.transpose(temp_x, (0, 3, 2, 1))
@@ -867,44 +892,72 @@ def training_function(pretrain_lr=0.13,
     test_patches -= data_mean
     test_patches /= normalizers
 
-    shared_test_x = load_cifar10.shared_dataset_x(test_patches)
-    # shared_test_x = test_patches
-    shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+    # shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+    # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
 
-    train_set = (shared_train_x, shared_train_y)
-    test_set = (shared_test_x, shared_test_y)
-    datasets = (train_set, test_set)
+    # train_set = (shared_train_x, shared_train_y)
+    # test_set = (shared_test_x, shared_test_y)
+    # datasets = (train_set, test_set)
 
     n_train_batches = int(ntrain / batch_size)
-    n_test_batches = int(ntest / batch_size)
+    # n_test_batches = int(ntest / batch_size)
 
     start_time = timeit.default_timer()
+
+    # Split the dataset
+    # The origin dataset is too big to the GPU
+    n_slice = 10  # split the dataset to n_slice parts
+    n_samples_of_every_slice = int(ntrain / n_slice)
+    n_batches_of_slice = int(n_samples_of_every_slice / batch_size)
+    n_test_batches = int(ntest / batch_size)
+
+    shared_train_x = theano.shared(np.ones((n_samples_of_every_slice * 27 * 27, n_in), dtype=theano.config.floatX), borrow=True)
+
+    # shared_test_x = theano.shared(np.ones((ntest * 27 * 27, n_in), dtype=theano.config.floatX), borrow=True)
+
+    best_test_loss = np.inf
 
     for i in range(len(finetune_lr)):
         print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
         print '... getting the finetuning functions'
-        train_fn, test_model = net.build_finetune_function(datasets=datasets,
-                                                           batch_size=batch_size,
-                                                           learning_rate=finetune_lr[i]
-                                                           )
 
-        best_validation_loss = np.inf
         epoch = 0
         while (epoch < training_epochs):
             print 'Training epoch {0}'.format(epoch)
             epoch += 1
-            for minibatch_index in xrange(n_train_batches):
-                minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
-                iter = (epoch - 1) * n_train_batches + minibatch_index
-                # print 'Batch {0}: dw1={1}, dw2={2}'.format(minibatch_index, abs(np.asarray(dw1)).sum(), abs(np.asarray(dw2)).sum())
+            for j in range(n_slice):
+                shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
+                shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+
+                # shared_test_x.set_value(test_patches, borrow=True)
+                # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+
+                train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
+                                                       batch_size=batch_size,
+                                                       learning_rate=finetune_lr[i]
+                                                       )
+
+                for minibatch_index in xrange(n_batches_of_slice):
+                    minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
 
             print 'Testing...'
-            validation_losses = test_model(n_test_batches)
-            this_validation_loss = np.mean(validation_losses)
-            print 'Epoch {0}, Test error {1}%'.format(epoch - 1, this_validation_loss * 100)
 
-            if this_validation_loss < best_validation_loss:
-                best_validation_loss = this_validation_loss
+            shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+            shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+            test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
+                                                 batch_size=batch_size)
+
+            test_losses = test_model(n_test_batches)
+            this_test_loss = np.mean(test_losses)
+            this_min_loss = np.min(test_losses)
+            print 'Epoch {0}, Test error {1}%'.format(epoch - 1, this_test_loss * 100)
+            print 'Epoch {0}, Minimum test error {1}%'.format(epoch - 1, this_min_loss * 100)
+
+            if this_test_loss < best_test_loss:
+                best_test_loss = this_test_loss
 
     end_time = timeit.default_timer()
 
@@ -915,7 +968,7 @@ def training_function(pretrain_lr=0.13,
 
 if __name__ == '__main__':
 
-    l2_reg = 0.0002  # weight of weight decay
+    l2_reg = 0.0003  # weight of weight decay
     #finetune_lr = [0.0001, 8e-5, 1.6e-5]
     finetune_lr = [0.01, 0.001, 0.0001, 8e-5, 1.6e-5]
 
