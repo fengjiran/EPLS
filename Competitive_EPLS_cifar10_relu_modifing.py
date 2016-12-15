@@ -221,25 +221,14 @@ class LogisticRegression(object):
         # start-snippet-1
         # initialize the weights W as a matrix of shape (n_in, n_out)
         rng = np.random.RandomState(1234)
-        # if W is None:
-        #     self.W = theano.shared(
-        #         value=np.asarray(
-        #             rng.normal(
-        #                 loc=0,
-        #                 scale=0.01,
-        #                 size=(n_in, n_out)
-        #             ),
-        #             dtype=theano.config.floatX
-        #         ),
-        #         name='W',
-        #         borrow=True
-        #     )
-        # else:
-        #     self.W = W
         if W is None:
             self.W = theano.shared(
-                value=np.zeros(
-                    (n_in, n_out),
+                value=np.asarray(
+                    rng.normal(
+                        loc=0,
+                        scale=0.01,
+                        size=(n_in, n_out)
+                    ),
                     dtype=theano.config.floatX
                 ),
                 name='W',
@@ -247,6 +236,17 @@ class LogisticRegression(object):
             )
         else:
             self.W = W
+        # if W is None:
+        #     self.W = theano.shared(
+        #         value=np.zeros(
+        #             (n_in, n_out),
+        #             dtype=theano.config.floatX
+        #         ),
+        #         name='W',
+        #         borrow=True
+        #     )
+        # else:
+        #     self.W = W
 
         # initialize the biases b as a vector of n_out 0s
         if b is None:
@@ -755,7 +755,7 @@ def training_function(pretrain_lr=0.13,
     # construct the network
     if continue_train:
         params = []
-        save_file = open('pretrain_params.save')
+        save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save')
         pas = cPickle.load(save_file)
         for pa in pas:
             params.append(theano.shared(
@@ -833,7 +833,7 @@ def training_function(pretrain_lr=0.13,
     # np.savetxt('hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
     # save the params of pretraining
-    save_file = open('pretrain_params.save', 'wb')
+    save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
     temp = []
     for param in net.pretrain_params:
         temp.append(param.get_value(borrow=True))
@@ -959,6 +959,13 @@ def training_function(pretrain_lr=0.13,
             if this_test_loss < best_test_loss:
                 best_test_loss = this_test_loss
 
+            save_file = open('/mnt/UAV_Storage/richard/weights.save', 'wb')
+            tmp = []
+            for param in net.params:
+                tmp.append(param.get_value(borrow=True))
+            cPickle.dump(tmp, save_file, True)
+            save_file.close()
+
     end_time = timeit.default_timer()
 
     print >> sys.stderr, ('The training code for file ' +
@@ -968,9 +975,9 @@ def training_function(pretrain_lr=0.13,
 
 if __name__ == '__main__':
 
-    l2_reg = 0.0003  # weight of weight decay
+    l2_reg = 0.00001  # weight of weight decay
     #finetune_lr = [0.0001, 8e-5, 1.6e-5]
-    finetune_lr = [0.01, 0.001, 0.0001, 8e-5, 1.6e-5]
+    finetune_lr = [0.001, 0.0001, 8e-5, 1.6e-5]
 
     training_function(pretrain_lr=0.001,  # 0.15
                       finetune_lr=finetune_lr,  # 0.05
@@ -978,14 +985,14 @@ if __name__ == '__main__':
                       hidden_layer_size=1600,
                       n_out=10,
                       pretraining_epochs=0,
-                      training_epochs=300,
+                      training_epochs=200,
                       pretrain_batch_size=1600,
                       batch_size=100,
                       eps=1e-6,
                       classifier='LR',
                       l2_reg=l2_reg,
                       activation=Relu,
-                      sparsity_rate=0.8,
+                      sparsity_rate=0.9,
                       continue_train=True
                       )
 
