@@ -6,6 +6,8 @@ import time
 import timeit
 import cPickle
 
+import yaml
+
 import numpy as np
 import pylab as pl
 
@@ -1069,10 +1071,14 @@ def training_function(pretrain_lr=0.13,
 
                 with open('/mnt/UAV_Storage/richard/current_pretrain_params.save') as f:
                     pas = cPickle.load(f)
+                    params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
-                    for ind in range(len(pas)):
-                        pa = pas[ind]
-                        net.params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
+                    for pa, param in zip(params, net.pretrain_params):
+                        param.set_value(pa)
+
+                    # for ind in range(len(pas)):
+                    #     pa = pas[ind]
+                    #     net.pretrain_params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
 
             else:
                 print 'No pretrain before finetune!'
@@ -1310,7 +1316,7 @@ if __name__ == '__main__':
                       classifier='LR',
                       l2_reg=l2_reg,
                       activation=Relu,
-                      sparsity_rate=0.9,
+                      sparsity_rate=0.95,
                       doPretrain=False,
                       doFinetune=True,
                       isFirstTimePretrain=False,
