@@ -1,0 +1,43 @@
+# If want to input None, use !!null
+
+# Network structure
+n_in: 108
+n_out: 10
+hidden_layer_size: 1600
+
+# Pretrain samples number
+NSPL: 400000
+patch_width: 6
+
+# Epoch
+pretraining_epochs: 30
+finetuning_epochs: 200
+
+# The learning rate of pretrain and finetune
+pretrain_lr: 0.001
+finetune_lr: [0.005, 0.0001, 8.0e-5, 1.6e-6]
+
+# Batch size 
+pretrain_batch_size: 1600
+finetune_batch_size: 100
+
+# Weight decay
+l2_reg: 0.00001
+
+sparsity_rate: 0.95
+
+# Classifier
+classifier: LR
+
+# activation
+activation: Relu # T.nnet.sigmoid
+
+eps: 1.0e-6
+
+doPretrain: True
+isFirstTimePretrain: True
+
+doFinetune: True
+isFirstTimeFinetune: True
+
+parameters_dir: /mnt/UAV_Storage/richard/epls_parameters/
