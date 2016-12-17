@@ -88,13 +88,12 @@ def load_cifar_10(datapath='/home/richard/datasets/cifar-10-batches-py'):
     return [(train_set_x, train_set_y), (test_set_x, test_set_y)]
 
 
-def extract_patches_for_classification(dataset, n_patches_per_image, patch_width):
+def extract_patches_for_classification(dataset, patch_width):
     '''
     '''
     n_samples = dataset.shape[0]
     patches = [extract_patches_2d(image=dataset[i],
-                                  patch_size=(patch_width, patch_width),
-                                  max_patches=n_patches_per_image
+                                  patch_size=(patch_width, patch_width)
                                   )
                for i in xrange(n_samples)
                ]
@@ -102,6 +101,21 @@ def extract_patches_for_classification(dataset, n_patches_per_image, patch_width
     patches = np.array(patches).reshape(-1, patch_width * patch_width * 3)
 
     return patches
+
+# def extract_patches_for_classification(dataset, n_patches_per_image, patch_width):
+#     '''
+#     '''
+#     n_samples = dataset.shape[0]
+#     patches = [extract_patches_2d(image=dataset[i],
+#                                   patch_size=(patch_width, patch_width),
+#                                   max_patches=n_patches_per_image
+#                                   )
+#                for i in xrange(n_samples)
+#                ]
+
+#     patches = np.array(patches).reshape(-1, patch_width * patch_width * 3)
+
+#     return patches
 
 
 def extract_patches_for_pretrain(dataset, NSPL, patch_width):
@@ -167,7 +181,7 @@ def shared_dataset_y(data_y, borrow=True):
     return T.cast(shared_y, 'int32')
 
 
-def global_contrast_normalize(X, scale=1.0, subtract_mean=True, use_std=True, sqrt_bias=0.0, min_divisor=1e-8):
+def global_contrast_normalize(X, scale=1.0, subtract_mean=True, use_std=True, sqrt_bias=10.0, min_divisor=1e-8):
     """
     Global contrast normalizes by (optional) subtracting the mean across features and then normalizes by either the
     vector norm or the standard deviation (across features, for each example).

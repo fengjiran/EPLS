@@ -716,7 +716,9 @@ def training_function(pretrain_lr=0.13,
                       sparsity_rate=0.5,
                       doPretrain=True,
                       doFinetune=True,
-                      continue_train=False
+                      isFirstTimePretrain=True,
+                      isFirstTimeFinetune=True
+                      # continue_train=False
                       ):
     '''
     '''
@@ -727,16 +729,6 @@ def training_function(pretrain_lr=0.13,
     print '... building the model'
 
     # construct the network
-    if continue_train:
-        params = []
-        save_file = open('/mnt/UAV_Storage/richard/params.save')
-        pas = cPickle.load(save_file)
-        for pa in pas:
-            params.append(theano.shared(
-                np.asarray(pa, dtype=theano.config.floatX)))
-
-        save_file.close()
-
     net = Network_epls(rng=rng,
                        n_in=n_in,
                        hidden_layer_size=hidden_layer_size,
@@ -745,17 +737,16 @@ def training_function(pretrain_lr=0.13,
                        mini_batch=batch_size,
                        n_samples=NSPL,
                        sparsity_rate=sparsity_rate,
-                       activation=activation,
-                       params=params if continue_train else None
+                       activation=activation
                        )
 
     # save parameters of net
-    save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
-    tmp = []
-    for param in net.params:
-        tmp.append(param.get_value(borrow=True))
-    cPickle.dump(tmp, save_file, True)
-    save_file.close()
+    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+    # tmp = []
+    # for param in net.params:
+    #     tmp.append(param.get_value(borrow=True))
+    # cPickle.dump(tmp, save_file, True)
+    # save_file.close()
 
     print '... loading the data'
 
@@ -793,77 +784,202 @@ def training_function(pretrain_lr=0.13,
 
         n_train_batches = int(NSPL / pretrain_batch_size)
 
-        #########################
-        # PRETRAINING THE MODEL #
-        #########################
-        print '... getting the pretraining functions'
+        if isFirstTimePretrain:
 
-        pretraining_fn = net.pretraining_function(
-            train_set_x=shared_pretrain_patches,
-            pretrain_batch_size=pretrain_batch_size,
-            learning_rate=pretrain_lr
-        )
+            print 'The first time to pretrain!'
 
-        print '... pre-training the model'
-        start_time = time.clock()
+            #########################
+            # PRETRAINING THE MODEL #
+            #########################
+            print '... getting the pretraining functions'
 
-        done_looping = False
-        epoch = 0
+            pretraining_fn = net.pretraining_function(
+                train_set_x=shared_pretrain_patches,
+                pretrain_batch_size=pretrain_batch_size,
+                learning_rate=pretrain_lr
+            )
 
-        epoch_error = []
-        # minibatch_output = np.zeros((batch_size, hidden_layer_size))
+            print '... pre-training the model'
+            start_time = time.clock()
 
-        while (epoch < pretraining_epochs) and (not done_looping):
+            epoch = 0
+            done_looping = False
+            epoch_error = []
 
-            arr = range(n_train_batches)
-            np.random.shuffle(arr)
-            inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
+            while (epoch < pretraining_epochs) and (not done_looping):
 
-            minibatch_error = []
-            for minibatch_index in arr:
-                minibatch_avg_cost, minibatch_output, gradients = pretraining_fn(minibatch_index, inhibitor)
-                minibatch_error.append(minibatch_avg_cost)
-                # print 'Batch {0} gradient abs sum is {1}'.format(minibatch_index, abs(np.asarray(gradients)).sum())
-                print abs(np.asarray(gradients)).sum()
+                # save the epoch
+                with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save', 'wb') as f:
+                    cPickle.dump(epoch, f, True)
 
-            loss = np.mean(minibatch_error)
-            print 'The loss of epoch {0} is {1}'.format(epoch, loss)
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_epoch.save', 'wb')
+                # cPickle.dump(epoch, save_file, True)
+                # save_file.close()
 
-            epoch_error.append(loss)
+                arr = range(n_train_batches)
+                np.random.shuffle(arr)
+                inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
 
-            # stop condition
-            # The relative decrement error between epochs is smaller than eps
-            if epoch > 0:
-                err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
-                if err < eps:
-                    done_looping = True
+                minibatch_error = []
+                for minibatch_index in arr:
+                    minibatch_avg_cost, minibatch_output, gradients = pretraining_fn(minibatch_index, inhibitor)
+                    minibatch_error.append(minibatch_avg_cost)
+                    # print 'Batch {0} gradient abs sum is {1}'.format(minibatch_index, abs(np.asarray(gradients)).sum())
+                    print abs(np.asarray(gradients)).sum()
 
-            epoch = epoch + 1
+                loss = np.mean(minibatch_error)
+                print 'The loss of epoch {0} is {1}'.format(epoch, loss)
 
-            np.savetxt('/mnt/UAV_Storage/richard/hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+                epoch_error.append(loss)
 
-        end_time = time.clock()
+                np.savetxt('/mnt/UAV_Storage/richard/hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
-        print >> sys.stderr, ('The pretraining code for file ' +
-                              os.path.split(__file__)[1] +
-                              ' ran for %.2fm' % ((end_time - start_time) / 60.))
+                # save the params of pretraining
+                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.pretrain_params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-        # np.savetxt('hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
+                # temp = []
+                # for param in net.pretrain_params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
 
-        # save the params of pretraining
-        save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
-        temp = []
-        for param in net.pretrain_params:
-            temp.append(param.get_value(borrow=True))
-        cPickle.dump(temp, save_file, True)
-        save_file.close()
+                # save the params of network
+                with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-        save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
-        tmp = []
-        for param in net.params:
-            tmp.append(param.get_value(borrow=True))
-        cPickle.dump(tmp, save_file, True)
-        save_file.close()
+                # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                # temp = []
+                # for param in net.params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
+
+                # stop condition
+                # The relative decrement error between epochs is smaller than eps
+                if len(epoch_error) > 1:
+                    err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
+                    if err < eps:
+                        done_looping = True
+
+                epoch = epoch + 1
+
+            end_time = time.clock()
+
+            print >> sys.stderr, ('The pretraining code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
+
+        else:
+            print 'Continue to pretrain!'
+            # load the pretrain params of network
+            with open('/mnt/UAV_Storage/richard/current_pretrain_params.save') as f:
+                pas = cPickle.load(f)
+                params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+                for pa, param in zip(params, net.pretrain_params):
+                    param.set_value(pa)
+
+            # save_file = open('/mnt/UAV_Storage/richard/params.save')
+            # pas = cPickle.load(save_file)
+            # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+            # for pa, param in zip(params, net.params):
+            #     param.set_value(pa)
+
+            # load the epoch
+            with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save') as f:
+                epoch = cPickle.load(f)
+
+            #########################
+            # PRETRAINING THE MODEL #
+            #########################
+            print '... getting the pretraining functions'
+
+            pretraining_fn = net.pretraining_function(
+                train_set_x=shared_pretrain_patches,
+                pretrain_batch_size=pretrain_batch_size,
+                learning_rate=pretrain_lr
+            )
+
+            print '... pre-training the model'
+            start_time = time.clock()
+
+            done_looping = False
+            epoch_error = []
+
+            while (epoch < pretraining_epochs) and (not done_looping):
+
+                # save the epoch
+                with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save', 'wb') as f:
+                    cPickle.dump(epoch, f, True)
+
+                arr = range(n_train_batches)
+                np.random.shuffle(arr)
+                inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
+
+                minibatch_error = []
+                for minibatch_index in arr:
+                    minibatch_avg_cost, minibatch_output, gradients = pretraining_fn(minibatch_index, inhibitor)
+                    minibatch_error.append(minibatch_avg_cost)
+                    # print 'Batch {0} gradient abs sum is {1}'.format(minibatch_index, abs(np.asarray(gradients)).sum())
+                    print abs(np.asarray(gradients)).sum()
+
+                loss = np.mean(minibatch_error)
+                print 'The loss of epoch {0} is {1}'.format(epoch, loss)
+
+                epoch_error.append(loss)
+
+                np.savetxt('/mnt/UAV_Storage/richard/hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+
+                # save the params of pretraining
+                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.pretrain_params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
+
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
+                # temp = []
+                # for param in net.pretrain_params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
+
+                # save the params of network
+                with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
+
+                # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                # temp = []
+                # for param in net.params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
+
+                # stop condition
+                # The relative decrement error between epochs is smaller than eps
+                if len(epoch_error) > 1:
+                    err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
+                    if err < eps:
+                        done_looping = True
+
+                epoch = epoch + 1
+
+            end_time = time.clock()
+
+            print >> sys.stderr, ('The pretraining code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
 
     if doFinetune:
 
@@ -944,67 +1060,241 @@ def training_function(pretrain_lr=0.13,
 
         best_test_loss = np.inf
 
-        for i in range(len(finetune_lr)):
-            print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
-            print '... getting the finetuning functions'
+        if isFirstTimeFinetune:
 
-            epoch = 0
-            while (epoch < training_epochs):
-                print 'Training epoch {0}'.format(epoch)
-                epoch += 1
-                for j in range(n_slice):
-                    shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
-                    shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+            print 'The first time to finetune!'
 
-                    # shared_test_x.set_value(test_patches, borrow=True)
-                    # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+            # load the pretrain parameters
+            if os.path.exists('/mnt/UAV_Storage/richard/current_pretrain_params.save'):
 
-                    # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save') as f:
+                    pas = cPickle.load(f)
 
-                    train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
-                                                           batch_size=batch_size,
-                                                           learning_rate=finetune_lr[i]
-                                                           )
+                    for ind in range(len(pas)):
+                        pa = pas[ind]
+                        net.params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
 
-                    for minibatch_index in xrange(n_batches_of_slice):
-                        minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+            else:
+                print 'No pretrain before finetune!'
 
-                print 'Testing...'
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save')
+                # pas = cPickle.load(save_file)
 
-                shared_test_x = load_cifar10.shared_dataset_x(test_patches)
-                shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+                # for ind in range(len(pas)):
+                #     pa = pas[ind]
+                #     net.params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
 
-                test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
-                                                     batch_size=batch_size)
+                # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
-                test_losses = test_model(n_test_batches)
-                this_test_loss = np.mean(test_losses)
-                this_min_loss = np.min(test_losses)
-                print 'Epoch {0}, Test error {1}%'.format(epoch - 1, this_test_loss * 100)
-                print 'Epoch {0}, Minimum test error {1}%'.format(epoch - 1, this_min_loss * 100)
+                # for pa, param in zip(params, net.params):
+                #     param.set_value(pa)
 
-                if this_test_loss < best_test_loss:
-                    best_test_loss = this_test_loss
+            for i in range(len(finetune_lr)):
+                print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                print '... getting the finetuning functions'
 
-                save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
-                tmp = []
-                for param in net.params:
-                    tmp.append(param.get_value(borrow=True))
-                cPickle.dump(tmp, save_file, True)
-                save_file.close()
+                # save the learning rate
+                with open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb') as f:
+                    cPickle.dump(finetune_lr[i], f, True)
 
-        end_time = timeit.default_timer()
+                # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
+                # cPickle.dump(finetune_lr[i], save_file, True)
+                # save_file.close()
 
-        print >> sys.stderr, ('The training code for file ' +
-                              os.path.split(__file__)[1] +
-                              ' ran for %.2fm' % ((end_time - start_time) / 60.))
+                epoch = 0
+                while (epoch < training_epochs):
+                    print 'Training epoch {0}'.format(epoch)
+
+                    # save the current finetune epoch
+                    with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb') as f:
+                        cPickle.dump(epoch, f, True)
+
+                    # epoch += 1
+
+                    for j in range(n_slice):
+                        shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
+                        shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+
+                        # shared_test_x.set_value(test_patches, borrow=True)
+                        # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                        # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+
+                        train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
+                                                               batch_size=batch_size,
+                                                               learning_rate=finetune_lr[i]
+                                                               )
+
+                        for minibatch_index in xrange(n_batches_of_slice):
+                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+
+                    print 'Testing...'
+
+                    shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+                    shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                    test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
+                                                         batch_size=batch_size
+                                                         )
+
+                    test_losses = test_model(n_test_batches)
+                    this_test_loss = np.mean(test_losses)
+                    this_min_loss = np.min(test_losses)
+                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
+                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+
+                    if this_test_loss < best_test_loss:
+                        best_test_loss = this_test_loss
+
+                    with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                        temp = []
+                        for param in net.params:
+                            temp.append(param.get_value(borrow=True))
+                        cPickle.dump(temp, f, True)
+
+                    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                    # tmp = []
+                    # for param in net.params:
+                    #     tmp.append(param.get_value(borrow=True))
+                    # cPickle.dump(tmp, save_file, True)
+                    # save_file.close()
+
+                    epoch += 1
+
+            end_time = timeit.default_timer()
+
+            print >> sys.stderr, ('The training code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
+        else:
+
+            print 'Continue to finetune!'
+
+            # load the parameters
+            with open('/mnt/UAV_Storage/richard/current_params.save') as f:
+                pas = cPickle.load(f)
+                params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+                for pa, param in zip(params, net.params):
+                    param.set_value(pa)
+
+            # save_file = open('/mnt/UAV_Storage/richard/current_params.save')
+            # pas = cPickle.load(save_file)
+            # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+            # for pa, param in zip(params, net.params):
+            #     param.set_value(pa)
+
+            # load current epoch
+            with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save') as f:
+                epoch = cPickle.load(f)
+
+            # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save')
+            # epoch = cPickle.load(save_file)
+            # save_file.close()
+
+            # load current learning rate
+            with open('/mnt/UAV_Storage/richard/current_finetune_lr.save') as f:
+                current_finetune_lr = cPickle.load(f)
+
+            # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save')
+            # current_finetune_lr = cPickle.load(save_file)
+            # save_file.close()
+
+            if current_finetune_lr in finetune_lr:
+                ind = finetune_lr.index(current_finetune_lr)
+                finetune_lr = finetune_lr[ind:]
+            else:
+                print 'The current fine tune learn rate is not in finetune_lr!'
+
+            for i in range(len(finetune_lr)):
+                print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                print '... getting the finetuning functions'
+
+                # save the learning rate
+                with open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb') as f:
+                    cPickle.dump(finetune_lr[i], f, True)
+
+                # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
+                # cPickle.dump(finetune_lr[i], save_file, True)
+                # save_file.close()
+
+                # epoch = 0
+                while (epoch < training_epochs):
+                    print 'Training epoch {0}'.format(epoch)
+
+                    # save the current finetune epoch
+                    with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb') as f:
+                        cPickle.dump(epoch, f, True)
+
+                    # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb')
+                    # cPickle.dump(epoch, save_file, True)
+                    # save_file.close()
+
+                    # epoch += 1
+
+                    for j in range(n_slice):
+                        shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
+                        shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+
+                        # shared_test_x.set_value(test_patches, borrow=True)
+                        # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                        # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+
+                        train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
+                                                               batch_size=batch_size,
+                                                               learning_rate=finetune_lr[i]
+                                                               )
+
+                        for minibatch_index in xrange(n_batches_of_slice):
+                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+
+                    print 'Testing...'
+
+                    shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+                    shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                    test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
+                                                         batch_size=batch_size
+                                                         )
+
+                    test_losses = test_model(n_test_batches)
+                    this_test_loss = np.mean(test_losses)
+                    this_min_loss = np.min(test_losses)
+                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
+                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+
+                    if this_test_loss < best_test_loss:
+                        best_test_loss = this_test_loss
+
+                    with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                        tmp = []
+                        for param in net.params:
+                            tmp.append(param.get_value(borrow=True))
+                        cPickle.dump(tmp, f, True)
+
+                    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                    # tmp = []
+                    # for param in net.params:
+                    #     tmp.append(param.get_value(borrow=True))
+                    # cPickle.dump(tmp, save_file, True)
+                    # save_file.close()
+
+                    epoch += 1
+
+            end_time = timeit.default_timer()
+
+            print >> sys.stderr, ('The training code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
 
 
 if __name__ == '__main__':
 
     l2_reg = 0.00001  # weight of weight decay
     # finetune_lr = [0.0001, 8e-5, 1.6e-5]
-    finetune_lr = [0.001, 0.0001, 8e-5, 1.6e-5]
+    finetune_lr = [0.005, 0.0001, 8e-5, 1.6e-5]
 
     training_function(pretrain_lr=0.001,  # 0.15
                       finetune_lr=finetune_lr,  # 0.05
@@ -1012,7 +1302,7 @@ if __name__ == '__main__':
                       hidden_layer_size=1600,
                       n_out=10,
                       NSPL=400000,
-                      pretraining_epochs=0,
+                      pretraining_epochs=30,
                       training_epochs=200,
                       pretrain_batch_size=1600,
                       batch_size=100,
@@ -1021,9 +1311,11 @@ if __name__ == '__main__':
                       l2_reg=l2_reg,
                       activation=Relu,
                       sparsity_rate=0.9,
-                      doPretrain=True,
+                      doPretrain=False,
                       doFinetune=True,
-                      continue_train=True
+                      isFirstTimePretrain=False,
+                      isFirstTimeFinetune=True
+                      # continue_train=True
                       )
 
     print 'DONE!'
