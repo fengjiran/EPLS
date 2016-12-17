@@ -64,7 +64,7 @@ class HiddenLayer(object):
             W_values = np.asarray(
                 rng.normal(
                     loc=0,
-                    scale=0.001,
+                    scale=0.01,
                     size=(n_in, n_out)
                 ),
                 dtype=theano.config.floatX
@@ -228,7 +228,7 @@ class LogisticRegression(object):
                 value=np.asarray(
                     rng.normal(
                         loc=0,
-                        scale=0.01,
+                        scale=0.1,
                         size=(n_in, n_out)
                     ),
                     dtype=theano.config.floatX
@@ -363,27 +363,10 @@ class OVASVMLayer(object):
 
         # initialize the weights W as a matrix of shape (n_in, n_out)
 
-        if W is None:
-            self.W = theano.shared(
-                value=np.zeros(
-                    (n_in, n_out),
-                    dtype=theano.config.floatX
-                ),
-                name='W',
-                borrow=True
-            )
-        else:
-            self.W = W
-
-        # rng = np.random.RandomState(1234)
         # if W is None:
         #     self.W = theano.shared(
-        #         value=np.asarray(
-        #             rng.normal(
-        #                 loc=0,
-        #                 scale=0.01,
-        #                 size=(n_in, n_out)
-        #             ),
+        #         value=np.zeros(
+        #             (n_in, n_out),
         #             dtype=theano.config.floatX
         #         ),
         #         name='W',
@@ -391,6 +374,23 @@ class OVASVMLayer(object):
         #     )
         # else:
         #     self.W = W
+
+        rng = np.random.RandomState(1234)
+        if W is None:
+            self.W = theano.shared(
+                value=np.asarray(
+                    rng.normal(
+                        loc=0,
+                        scale=0.1,
+                        size=(n_in, n_out)
+                    ),
+                    dtype=theano.config.floatX
+                ),
+                name='W',
+                borrow=True
+            )
+        else:
+            self.W = W
 
         # self.W = theano.shared(value=np.zeros((n_in, n_out),
         #                                          dtype=theano.config.floatX),
@@ -701,31 +701,42 @@ class Network_epls(object):
         return test_score
 
 
-def training_function(pretrain_lr=0.13,
-                      finetune_lr=[],
-                      n_in=6 * 6 * 3,
-                      hidden_layer_size=1600,
-                      n_out=10,
-                      NSPL=400000,
-                      pretraining_epochs=20,
-                      training_epochs=1000,
-                      pretrain_batch_size=1600,
-                      batch_size=100,
-                      eps=1e-6,
-                      classifier='LR',
-                      l2_reg=0.,
-                      activation=Relu,
-                      sparsity_rate=0.5,
-                      doPretrain=True,
-                      doFinetune=True,
-                      isFirstTimePretrain=True,
-                      isFirstTimeFinetune=True
-                      # continue_train=False
-                      ):
+def training_function(config):
     '''
     '''
     rng = np.random.RandomState(1234)
-    patch_width = 6
+    patch_width = config['patch_width']
+    n_in = config['n_in']
+    n_out = config['n_out']
+    hidden_layer_size = config['hidden_layer_size']
+    pretrain_batch_size = config['pretrain_batch_size']
+    batch_size = config['finetune_batch_size']
+
+    pretraining_epochs = config['pretraining_epochs']
+    training_epochs = config['finetuning_epochs']
+
+    NSPL = config['NSPL']
+    sparsity_rate = config['sparsity_rate']
+    activation = Relu if config['activation'] == 'relu' \
+        or config['activation'] == 'Relu' \
+        or config['activation'] == 'ReLu' \
+        or config['activation'] == 'RELU' \
+        else T.nnet.sigmoid
+
+    classifier = config['classifier']
+    eps = config['eps']
+
+    pretrain_lr = config['pretrain_lr']
+    finetune_lr = config['finetune_lr']
+    l2_reg = config['l2_reg']
+
+    doPretrain = config['doPretrain']
+    doFinetune = config['doFinetune']
+
+    isFirstTimePretrain = config['isFirstTimePretrain']
+    isFirstTimeFinetune = config['isFirstTimeFinetune']
+
+    parameters_dir = config['parameters_dir']
 
     # print pretrain_patches.shape
     print '... building the model'
@@ -739,7 +750,8 @@ def training_function(pretrain_lr=0.13,
                        mini_batch=batch_size,
                        n_samples=NSPL,
                        sparsity_rate=sparsity_rate,
-                       activation=activation
+                       activation=activation,
+                       classifier=classifier
                        )
 
     # save parameters of net
@@ -811,7 +823,7 @@ def training_function(pretrain_lr=0.13,
             while (epoch < pretraining_epochs) and (not done_looping):
 
                 # save the epoch
-                with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save', 'wb') as f:
+                with open(parameters_dir + 'current_pretrain_epoch.save', 'wb') as f:
                     cPickle.dump(epoch, f, True)
 
                 # save_file = open('/mnt/UAV_Storage/richard/pretrain_epoch.save', 'wb')
@@ -834,10 +846,10 @@ def training_function(pretrain_lr=0.13,
 
                 epoch_error.append(loss)
 
-                np.savetxt('/mnt/UAV_Storage/richard/hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+                np.savetxt(parameters_dir + 'hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
                 # save the params of pretraining
-                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save', 'wb') as f:
+                with open(parameters_dir + 'current_pretrain_params.save', 'wb') as f:
                     temp = []
                     for param in net.pretrain_params:
                         temp.append(param.get_value(borrow=True))
@@ -851,7 +863,7 @@ def training_function(pretrain_lr=0.13,
                 # save_file.close()
 
                 # save the params of network
-                with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                with open(parameters_dir + 'current_params.save', 'wb') as f:
                     temp = []
                     for param in net.params:
                         temp.append(param.get_value(borrow=True))
@@ -882,7 +894,7 @@ def training_function(pretrain_lr=0.13,
         else:
             print 'Continue to pretrain!'
             # load the pretrain params of network
-            with open('/mnt/UAV_Storage/richard/current_pretrain_params.save') as f:
+            with open(parameters_dir + 'current_pretrain_params.save') as f:
                 pas = cPickle.load(f)
                 params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
                 for pa, param in zip(params, net.pretrain_params):
@@ -896,7 +908,7 @@ def training_function(pretrain_lr=0.13,
             #     param.set_value(pa)
 
             # load the epoch
-            with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save') as f:
+            with open(parameters_dir + 'current_pretrain_epoch.save') as f:
                 epoch = cPickle.load(f)
 
             #########################
@@ -919,7 +931,7 @@ def training_function(pretrain_lr=0.13,
             while (epoch < pretraining_epochs) and (not done_looping):
 
                 # save the epoch
-                with open('/mnt/UAV_Storage/richard/current_pretrain_epoch.save', 'wb') as f:
+                with open(parameters_dir + 'current_pretrain_epoch.save', 'wb') as f:
                     cPickle.dump(epoch, f, True)
 
                 arr = range(n_train_batches)
@@ -938,10 +950,10 @@ def training_function(pretrain_lr=0.13,
 
                 epoch_error.append(loss)
 
-                np.savetxt('/mnt/UAV_Storage/richard/hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+                np.savetxt(parameters_dir + 'hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
                 # save the params of pretraining
-                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save', 'wb') as f:
+                with open(parameters_dir + 'current_pretrain_params.save', 'wb') as f:
                     temp = []
                     for param in net.pretrain_params:
                         temp.append(param.get_value(borrow=True))
@@ -955,7 +967,7 @@ def training_function(pretrain_lr=0.13,
                 # save_file.close()
 
                 # save the params of network
-                with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                with open(parameters_dir + 'current_params.save', 'wb') as f:
                     temp = []
                     for param in net.params:
                         temp.append(param.get_value(borrow=True))
@@ -1067,9 +1079,9 @@ def training_function(pretrain_lr=0.13,
             print 'The first time to finetune!'
 
             # load the pretrain parameters
-            if os.path.exists('/mnt/UAV_Storage/richard/current_pretrain_params.save'):
+            if os.path.exists(parameters_dir + 'current_pretrain_params.save'):
 
-                with open('/mnt/UAV_Storage/richard/current_pretrain_params.save') as f:
+                with open(parameters_dir + 'current_pretrain_params.save') as f:
                     pas = cPickle.load(f)
                     params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
@@ -1100,7 +1112,7 @@ def training_function(pretrain_lr=0.13,
                 print '... getting the finetuning functions'
 
                 # save the learning rate
-                with open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb') as f:
+                with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
                     cPickle.dump(finetune_lr[i], f, True)
 
                 # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
@@ -1112,7 +1124,7 @@ def training_function(pretrain_lr=0.13,
                     print 'Training epoch {0}'.format(epoch)
 
                     # save the current finetune epoch
-                    with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb') as f:
+                    with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
                         cPickle.dump(epoch, f, True)
 
                     # epoch += 1
@@ -1152,7 +1164,7 @@ def training_function(pretrain_lr=0.13,
                     if this_test_loss < best_test_loss:
                         best_test_loss = this_test_loss
 
-                    with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                    with open(parameters_dir + 'current_params.save', 'wb') as f:
                         temp = []
                         for param in net.params:
                             temp.append(param.get_value(borrow=True))
@@ -1177,7 +1189,7 @@ def training_function(pretrain_lr=0.13,
             print 'Continue to finetune!'
 
             # load the parameters
-            with open('/mnt/UAV_Storage/richard/current_params.save') as f:
+            with open(parameters_dir + 'current_params.save') as f:
                 pas = cPickle.load(f)
                 params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
@@ -1192,7 +1204,7 @@ def training_function(pretrain_lr=0.13,
             #     param.set_value(pa)
 
             # load current epoch
-            with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save') as f:
+            with open(parameters_dir + 'current_finetune_epoch.save') as f:
                 epoch = cPickle.load(f)
 
             # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save')
@@ -1200,7 +1212,7 @@ def training_function(pretrain_lr=0.13,
             # save_file.close()
 
             # load current learning rate
-            with open('/mnt/UAV_Storage/richard/current_finetune_lr.save') as f:
+            with open(parameters_dir + 'current_finetune_lr.save') as f:
                 current_finetune_lr = cPickle.load(f)
 
             # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save')
@@ -1218,7 +1230,7 @@ def training_function(pretrain_lr=0.13,
                 print '... getting the finetuning functions'
 
                 # save the learning rate
-                with open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb') as f:
+                with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
                     cPickle.dump(finetune_lr[i], f, True)
 
                 # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
@@ -1230,7 +1242,7 @@ def training_function(pretrain_lr=0.13,
                     print 'Training epoch {0}'.format(epoch)
 
                     # save the current finetune epoch
-                    with open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb') as f:
+                    with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
                         cPickle.dump(epoch, f, True)
 
                     # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb')
@@ -1274,7 +1286,7 @@ def training_function(pretrain_lr=0.13,
                     if this_test_loss < best_test_loss:
                         best_test_loss = this_test_loss
 
-                    with open('/mnt/UAV_Storage/richard/current_params.save', 'wb') as f:
+                    with open(parameters_dir + 'current_params.save', 'wb') as f:
                         tmp = []
                         for param in net.params:
                             tmp.append(param.get_value(borrow=True))
@@ -1298,30 +1310,9 @@ def training_function(pretrain_lr=0.13,
 
 if __name__ == '__main__':
 
-    l2_reg = 0.00001  # weight of weight decay
-    # finetune_lr = [0.0001, 8e-5, 1.6e-5]
-    finetune_lr = [0.005, 0.0001, 8e-5, 1.6e-5]
+    with open('config.yaml', 'r') as f:
+        config = yaml.load(f)
 
-    training_function(pretrain_lr=0.001,  # 0.15
-                      finetune_lr=finetune_lr,  # 0.05
-                      n_in=6 * 6 * 3,
-                      hidden_layer_size=1600,
-                      n_out=10,
-                      NSPL=400000,
-                      pretraining_epochs=30,
-                      training_epochs=200,
-                      pretrain_batch_size=1600,
-                      batch_size=100,
-                      eps=1e-6,
-                      classifier='LR',
-                      l2_reg=l2_reg,
-                      activation=Relu,
-                      sparsity_rate=0.95,
-                      doPretrain=False,
-                      doFinetune=True,
-                      isFirstTimePretrain=False,
-                      isFirstTimeFinetune=True
-                      # continue_train=True
-                      )
+    training_function(config)
 
     print 'DONE!'
