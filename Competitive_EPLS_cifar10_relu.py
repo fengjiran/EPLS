@@ -6,6 +6,8 @@ import time
 import timeit
 import cPickle
 
+import yaml
+
 import numpy as np
 import pylab as pl
 
@@ -20,6 +22,11 @@ def Relu(x):
     return T.maximum(0, x)
 
 
+# step function, the gradient of relu
+def step_func(x):
+    return x >= 0
+
+
 class HiddenLayer(object):
 
     def __init__(self,
@@ -31,7 +38,7 @@ class HiddenLayer(object):
                  b=None,
                  activation=Relu):
         '''
-        Typical hidden layer of a MLP: units are fully-connected and have sigmoidal activation 
+        Typical hidden layer of a MLP: units are fully-connected and have sigmoidal activation
         function. Weight maxtrix W is of shape (n_in, n_out) and the bias vector b is of shape
         (n_out,).
 
@@ -57,13 +64,17 @@ class HiddenLayer(object):
             W_values = np.asarray(
                 rng.normal(
                     loc=0,
-                    scale=0.01,
+                    scale=0.1,
                     size=(n_in, n_out)
                 ),
                 dtype=theano.config.floatX
             )
 
             W = theano.shared(value=W_values, name='W', borrow=True)
+
+        if b is None:
+            b_values = np.ones((n_out,), dtype=theano.config.floatX)
+            b = theano.shared(value=b_values, name='b', borrow=True)
 
         # if W is None:
         #     W_values = np.asarray(
@@ -79,9 +90,9 @@ class HiddenLayer(object):
 
         #     W = theano.shared(value=W_values, name='W', borrow=True)
 
-        if b is None:
-            b_values = np.ones((n_out,), dtype=theano.config.floatX)
-            b = theano.shared(value=b_values, name='b', borrow=True)
+        # if b is None:
+        #     b_values = np.zeros((n_out,), dtype=theano.config.floatX)
+        #     b = theano.shared(value=b_values, name='b', borrow=True)
 
         self.W = W
         self.b = b
@@ -89,6 +100,8 @@ class HiddenLayer(object):
         self.params = [self.W, self.b]
 
         lin_output = T.dot(input, self.W) + self.b
+
+        self.lin_output = lin_output
 
         self.output = (lin_output if activation is None
                        else activation(lin_output)
@@ -107,8 +120,8 @@ class HiddenLayer(object):
         l2W = T.sqrt(T.sum(self.W ** 2, axis=0))
         W_ = self.W / l2W
 
-        # cosine_sim = T.dot(input_, W_)
-        cosine_sim = self.output
+        cosine_sim = T.dot(input_, W_)
+        # cosine_sim = self.output
 
         self.H = (cosine_sim - T.min(cosine_sim)) / (T.max(cosine_sim) - T.min(cosine_sim))
 
@@ -177,7 +190,42 @@ class HiddenLayer(object):
                                        non_sequences=self.H
                                        )
 
+        self.target = results[-1]
+
         return 0.5 * T.sum((self.output - results[-1]) ** 2) / pretrain_mini_batch
+
+
+class DropoutLayer(object):
+
+    seed_common = np.random.RandomState(0)
+    layers = []
+
+    def __init__(self, input, n_in, n_out, prob_drop=0.5):
+
+        self.prob_drop = prob_drop
+        self.prob_keep = 1.0 - prob_drop
+        self.flag_on = theano.shared(np.cast[theano.config.floatX](1.0))
+        self.flag_off = 1.0 - self.flag_on
+
+        seed_this = DropoutLayer.seed_common.randint(0, 2**31 - 1)
+        mask_rng = theano.tensor.shared_randomstreams.RandomStreams(seed_this)
+        self.mask = mask_rng.binomial(n=1, p=self.prob_keep, size=input.shape)
+
+        self.output = self.flag_on * T.cast(self.mask, theano.config.floatX) * input + self.flag_off * self.prob_keep * input
+
+        DropoutLayer.layers.append(self)
+
+        print 'Dropout layer with P_drop: ' + str(self.prob_drop)
+
+    @staticmethod
+    def SetDropoutOn():
+        for i in range(len(DropoutLayer.layers)):
+            DropoutLayer.layers[i].flag_on.set_value(1.0)
+
+    @staticmethod
+    def SetDropoutOff():
+        for i in range(len(DropoutLayer.layers)):
+            DropoutLayer.layers[i].flag_on.set_value(0.0)
 
 
 class LogisticRegression(object):
@@ -213,7 +261,7 @@ class LogisticRegression(object):
                 value=np.asarray(
                     rng.normal(
                         loc=0,
-                        scale=0.01,
+                        scale=0.1,
                         size=(n_in, n_out)
                     ),
                     dtype=theano.config.floatX
@@ -223,6 +271,17 @@ class LogisticRegression(object):
             )
         else:
             self.W = W
+        # if W is None:
+        #     self.W = theano.shared(
+        #         value=np.zeros(
+        #             (n_in, n_out),
+        #             dtype=theano.config.floatX
+        #         ),
+        #         name='W',
+        #         borrow=True
+        #     )
+        # else:
+        #     self.W = W
 
         # initialize the biases b as a vector of n_out 0s
         if b is None:
@@ -355,7 +414,7 @@ class OVASVMLayer(object):
                 value=np.asarray(
                     rng.normal(
                         loc=0,
-                        scale=0.01,
+                        scale=0.1,
                         size=(n_in, n_out)
                     ),
                     dtype=theano.config.floatX
@@ -458,9 +517,9 @@ class Network_epls(object):
                                        )
 
         classifier_input = T.transpose(self.hiddenLayer.output, (1, 0))  # (1600, N*14*14)
-        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 14, 14))   # (1600, N, 14, 14)
+        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 27, 27))   # (1600, N, 14, 14)
         classifier_input2 = pool.pool_2d(input=classifier_input1,
-                                         ds=(7, 7),
+                                         ds=(13, 13),
                                          ignore_border=True
                                          )  # (1600, N, 2, 2)
         classifier_input3 = T.transpose(classifier_input2, (1, 0, 2, 3))  # (N, 1600, 2, 2)
@@ -468,9 +527,9 @@ class Network_epls(object):
 
         # polarity splitting
         classifier_input = T.transpose(self.hiddenLayer.output_mirror, (1, 0))  # (1600, N*14*14)
-        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 14, 14))   # (1600, N, 14, 14)
+        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 27, 27))   # (1600, N, 14, 14)
         classifier_input2 = pool.pool_2d(input=classifier_input1,
-                                         ds=(7, 7),
+                                         ds=(13, 13),
                                          ignore_border=True
                                          )  # (1600, N, 2, 2)
         classifier_input3 = T.transpose(classifier_input2, (1, 0, 2, 3))  # (N, 1600, 2, 2)
@@ -482,8 +541,8 @@ class Network_epls(object):
             self.classifier = LogisticRegression(input=classifier_input,
                                                  n_in=4 * 2 * hidden_layer_size,
                                                  n_out=n_out,
-                                                 W=params[-2] if params else None,
-                                                 b=params[-1] if params else None
+                                                 W=params[2] if params else None,
+                                                 b=params[3] if params else None
                                                  )
 
             # the cost and parameters of EPLS layer
@@ -500,7 +559,8 @@ class Network_epls(object):
             self.pretrain_params = self.hiddenLayer.params
 
             # the cost and parameters of classifier layer
-            self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
+            # self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
+            self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
             self.classifier_params = self.classifier.params
             self.errors = self.classifier.errors(self.y)
 
@@ -513,8 +573,8 @@ class Network_epls(object):
             self.classifier = OVASVMLayer(input=classifier_input,
                                           n_in=4 * 2 * hidden_layer_size,
                                           n_out=n_out,
-                                          W=params[-2] if params else None,
-                                          b=params[-1] if params else None
+                                          W=params[2] if params else None,
+                                          b=params[3] if params else None
                                           )
 
             # the cost and parameters of EPLS layer
@@ -532,7 +592,8 @@ class Network_epls(object):
             self.pretrain_params = self.hiddenLayer.params
 
             # the cost and parameters of classifier layer
-            self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
+            # self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
+            self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
             self.classifier_params = self.classifier.params
             self.errors = self.classifier.errors(self.y)
 
@@ -548,18 +609,31 @@ class Network_epls(object):
         # index to a mini-batch
         index = T.lscalar('index')
 
+        gradients = T.dmatrix('gradients')   # for testing the gradients
+
         # compute the gradient of cost with respect to the theta (stored in params)
         # the resulting gradients will be stored in a list gparams
+
         gparams = [T.grad(self.pretrain_cost, param)
                    for param in self.pretrain_params]
+
+        # gparam_w = T.dot(self.x.T, (self.hiddenLayer.output - self.hiddenLayer.target) * step_func(self.hiddenLayer.lin_output)).astype('float32') / pretrain_batch_size
+        # gparam_b = T.dot(step_func(self.hiddenLayer.lin_output).sum(axis=1).T, self.hiddenLayer.output - self.hiddenLayer.target).astype('float32') / pretrain_batch_size
+
+        # gparam_w = T.dot(self.x.T, (self.hiddenLayer.output - self.hiddenLayer.target) * self.hiddenLayer.output * (1 - self.hiddenLayer.output)).astype('float32') / pretrain_batch_size
+        # gparam_b = T.dot((self.hiddenLayer.output * (1 - self.hiddenLayer.output)).sum(axis=1).T, self.hiddenLayer.output - self.hiddenLayer.target).astype('float32') / pretrain_batch_size
+
+        # gparams = [gparam_w, gparam_b]
 
         updates = [(param, param - learning_rate * gparam)
                    for param, gparam in zip(self.pretrain_params, gparams)
                    ]
 
+        gradients = gparams[0]
+
         pretrain_fn = theano.function(
             inputs=[index, self.inhibitor],
-            outputs=[self.pretrain_cost, self.hiddenLayer.output],
+            outputs=[self.pretrain_cost, self.hiddenLayer.output, gradients],
             updates=updates,
             givens={
                 self.x: train_set_x[index * pretrain_batch_size: (index + 1) * pretrain_batch_size]
@@ -571,20 +645,30 @@ class Network_epls(object):
     def build_finetune_function(self, datasets, batch_size, learning_rate):
         """
         Generates a function 'train' that implementa one step of finetuning,
-        a function 'validate' that computes the error on a batch from the 
-        validation set, and a function 'test' that computes the error on a 
+        a function 'validate' that computes the error on a batch from the
+        validation set, and a function 'test' that computes the error on a
         batch from the test set.
         """
-        (train_set_x, train_set_y) = datasets[0]
-        (test_set_x, test_set_y) = datasets[1]
+        (train_set_x, train_set_y) = datasets
+        # (test_set_x, test_set_y) = datasets[1]
 
         # compute number of minibatchs for training and testing
-        n_train_batches = int(train_set_x.get_value(borrow=True).shape[0] / batch_size)
-        n_test_batches = int(test_set_x.get_value(borrow=True).shape[0] / batch_size)
+        # n_train_batches = int(train_set_x.get_value(borrow=True).shape[0] / batch_size)
+        # n_test_batches = int(test_set_x.get_value(borrow=True).shape[0] / batch_size)
 
         # index to a mini-batch
         index = T.lscalar('index')
         # learning_rate = T.dscalar('learning_rate')
+
+        # gradients1, gradients2 = T.dmatrices('gradients1', 'gradients2')   # for testing the gradients
+
+        # gparams = [T.grad(self.classifier_cost, param)
+        #            for param in self.classifier_params]
+
+        # updates = [
+        #     (param, param - learning_rate * gparam)
+        #     for param, gparam in zip(self.classifier_params, gparams)
+        # ]
 
         gparams = [T.grad(self.classifier_cost, param)
                    for param in self.params]
@@ -594,23 +678,51 @@ class Network_epls(object):
             for param, gparam in zip(self.params, gparams)
         ]
 
+        # gradients1 = gparams[0]
+        # gradients2 = gparams[2]
+
         train_fn = theano.function(
             inputs=[index, self.l2_reg],
             outputs=self.classifier_cost,
             updates=updates,
             givens={
-                self.x: train_set_x[index * batch_size * 196: (index + 1) * batch_size * 196],
+                self.x: train_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
                 self.y: train_set_y[index * batch_size: (index + 1) * batch_size]
             },
             name='train'
         )
 
+        # test_score_i = theano.function(
+        #     inputs=[index],
+        #     outputs=self.errors,
+        #     givens={
+        #         self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+        #     },
+        #     name='test'
+        # )
+
+        # # Create a function that scans the entire test set
+        # def test_score(n_batches):
+        #     return [test_score_i(i) for i in xrange(n_batches)]
+
+        return train_fn
+
+    def build_test_function(self, dataset, batch_size):
+        '''
+        Build the function for the testing.
+        The function 'test' that computes the error on a batch from the test set
+        '''
+        (test_set_x, test_set_y) = dataset
+
+        index = T.lscalar('index')
+
         test_score_i = theano.function(
             inputs=[index],
             outputs=self.errors,
             givens={
-                self.x: test_set_x[index * batch_size * 196: (index + 1) * batch_size * 196],
-                self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+                self.x: test_set_x[index * batch_size * 27 * 27:(index + 1) * batch_size * 27 * 27],
+                self.y: test_set_y[index * batch_size:(index + 1) * batch_size]
             },
             name='test'
         )
@@ -619,29 +731,72 @@ class Network_epls(object):
         def test_score(n_batches):
             return [test_score_i(i) for i in xrange(n_batches)]
 
-        return train_fn, test_score
+        return test_score
 
 
-def training_function(pretrain_lr=0.13,
-                      finetune_lr=[],
-                      n_in=6 * 6 * 3,
-                      hidden_layer_size=1600,
-                      n_out=10,
-                      pretraining_epochs=20,
-                      training_epochs=1000,
-                      pretrain_batch_size=1600,
-                      batch_size=100,
-                      eps=1e-6,
-                      classifier='LR',
-                      l2_reg=0.,
-                      activation=Relu,
-                      sparsity_rate=0.5,
-                      continue_train=False
-                      ):
+def training_function(config):
     '''
     '''
     rng = np.random.RandomState(1234)
-    patch_width = 6
+    n_slice = config['n_slice']
+    patch_width = config['patch_width']
+    n_in = config['n_in']
+    n_out = config['n_out']
+    hidden_layer_size = config['hidden_layer_size']
+    pretrain_batch_size = config['pretrain_batch_size']
+    batch_size = config['finetune_batch_size']
+
+    pretraining_epochs = config['pretraining_epochs']
+    training_epochs = config['finetuning_epochs']
+
+    NSPL = config['NSPL']
+    sparsity_rate = config['sparsity_rate']
+    activation = Relu if config['activation'] == 'relu' \
+        or config['activation'] == 'Relu' \
+        or config['activation'] == 'ReLu' \
+        or config['activation'] == 'RELU' \
+        else T.nnet.sigmoid
+
+    classifier = config['classifier']
+    eps = config['eps']
+
+    pretrain_lr = config['pretrain_lr']
+    finetune_lr = config['finetune_lr']
+    l2_reg = config['l2_reg']
+
+    use_dropout = config['use_dropout']
+
+    doPretrain = config['doPretrain']
+    doFinetune = config['doFinetune']
+
+    isFirstTimePretrain = config['isFirstTimePretrain']
+    isFirstTimeFinetune = config['isFirstTimeFinetune']
+
+    parameters_dir = config['parameters_dir']
+
+    # print pretrain_patches.shape
+    print '... building the model'
+
+    # construct the network
+    net = Network_epls(rng=rng,
+                       n_in=n_in,
+                       hidden_layer_size=hidden_layer_size,
+                       n_out=n_out,
+                       pretrain_mini_batch=pretrain_batch_size,
+                       mini_batch=batch_size,
+                       n_samples=NSPL,
+                       sparsity_rate=sparsity_rate,
+                       activation=activation,
+                       classifier=classifier
+                       )
+
+    # save parameters of net
+    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+    # tmp = []
+    # for param in net.params:
+    #     tmp.append(param.get_value(borrow=True))
+    # cPickle.dump(tmp, save_file, True)
+    # save_file.close()
 
     print '... loading the data'
 
@@ -651,337 +806,551 @@ def training_function(pretrain_lr=0.13,
     temp_x = np.transpose(temp_x, (0, 3, 2, 1))
 
     pretrain_patches = load_cifar10.extract_patches_for_pretrain(dataset=temp_x,
-                                                                 NSPL=400000,
+                                                                 NSPL=NSPL,
                                                                  patch_width=patch_width
                                                                  )
+
+    pretrain_patches = load_cifar10.global_contrast_normalize(pretrain_patches)
     # local contrast normalize
     data_mean = pretrain_patches.mean(axis=0)
-    pretrain_patches -= data_mean
+    # pretrain_patches -= data_mean
 
-    # normalizers = np.sqrt(10 + pretrain_patches.var(axis=0, ddof=1))
-    # normalizers[normalizers < 1e-8] = 1.
+    normalizers = np.sqrt(0.01 + pretrain_patches.var(axis=0, ddof=1))
+    normalizers[normalizers < 1e-8] = 1.
     # pretrain_patches /= normalizers
 
     # pretrain_patches = load_cifar10.global_contrast_normalize(pretrain_patches)
     # pretrain_patches = load_cifar10.zca(pretrain_patches)
-    pretrain_patches = np.asarray(pretrain_patches, dtype=np.float32)
+    if doPretrain:
 
-    n_samples = pretrain_patches.shape[0]
+        pretrain_patches -= data_mean
+        pretrain_patches /= normalizers
 
-    shared_pretrain_patches = load_cifar10.shared_dataset_x(pretrain_patches)
+        pretrain_patches = np.asarray(pretrain_patches, dtype=np.float32)
 
-    # print pretrain_patches.shape
-    print '... building the model'
+        n_samples = pretrain_patches.shape[0]
 
-    # construct the network
-    if continue_train:
-        params = []
-        save_file = open('params.save')
-        pas = cPickle.load(save_file)
-        for pa in pas:
-            params.append(theano.shared(
-                np.asarray(pa, dtype=theano.config.floatX)))
+        shared_pretrain_patches = load_cifar10.shared_dataset_x(pretrain_patches)
 
-        save_file.close()
+        n_train_batches = int(NSPL / pretrain_batch_size)
 
-    net = Network_epls(rng=rng,
-                       n_in=n_in,
-                       hidden_layer_size=hidden_layer_size,
-                       n_out=n_out,
-                       pretrain_mini_batch=pretrain_batch_size,
-                       mini_batch=batch_size,
-                       n_samples=n_samples,
-                       sparsity_rate=sparsity_rate,
-                       activation=activation
-                       )
+        if isFirstTimePretrain:
 
-    n_train_batches = int(n_samples / pretrain_batch_size)
+            print 'The first time to pretrain!'
 
-    #########################
-    # PRETRAINING THE MODEL #
-    #########################
-    print '... getting the pretraining functions'
+            #########################
+            # PRETRAINING THE MODEL #
+            #########################
+            print '... getting the pretraining functions'
 
-    pretraining_fn = net.pretraining_function(
-        train_set_x=shared_pretrain_patches,
-        pretrain_batch_size=pretrain_batch_size,
-        learning_rate=pretrain_lr
-    )
+            pretraining_fn = net.pretraining_function(
+                train_set_x=shared_pretrain_patches,
+                pretrain_batch_size=pretrain_batch_size,
+                learning_rate=pretrain_lr
+            )
 
-    print '... pre-training the model'
-    start_time = time.clock()
+            print '... pre-training the model'
+            start_time = time.clock()
 
-    done_looping = False
-    epoch = 0
+            epoch = 0
+            done_looping = False
+            epoch_error = []
 
-    epoch_error = []
-    # minibatch_output = np.zeros((batch_size, hidden_layer_size))
+            while (epoch < pretraining_epochs) and (not done_looping):
 
-    while (epoch < pretraining_epochs) and (not done_looping):
+                # save the epoch
+                with open(parameters_dir + 'current_pretrain_epoch.save', 'wb') as f:
+                    cPickle.dump(epoch, f, True)
 
-        arr = range(n_train_batches)
-        np.random.shuffle(arr)
-        inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_epoch.save', 'wb')
+                # cPickle.dump(epoch, save_file, True)
+                # save_file.close()
 
-        minibatch_error = []
-        for minibatch_index in arr:
-            minibatch_avg_cost, minibatch_output = pretraining_fn(minibatch_index, inhibitor)
-            minibatch_error.append(minibatch_avg_cost)
+                arr = range(n_train_batches)
+                np.random.shuffle(arr)
+                inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
 
-        loss = np.mean(minibatch_error)
-        print 'The loss of epoch {0} is {1}'.format(epoch, loss)
+                minibatch_error = []
+                for minibatch_index in arr:
+                    minibatch_avg_cost, minibatch_output, gradients = pretraining_fn(minibatch_index, inhibitor)
+                    minibatch_error.append(minibatch_avg_cost)
+                    # print 'Batch {0} gradient abs sum is {1}'.format(minibatch_index, abs(np.asarray(gradients)).sum())
+                    print abs(np.asarray(gradients)).sum()
 
-        epoch_error.append(loss)
+                loss = np.mean(minibatch_error)
+                print 'The loss of epoch {0} is {1}'.format(epoch, loss)
 
-        # stop condition
-        # The relative decrement error between epochs is smaller than eps
-        if epoch > 0:
-            err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
-            if err < eps:
-                done_looping = True
+                epoch_error.append(loss)
 
-        epoch = epoch + 1
+                np.savetxt(parameters_dir + 'hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
-    end_time = time.clock()
+                # save the params of pretraining
+                with open(parameters_dir + 'current_pretrain_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.pretrain_params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-    print >> sys.stderr, ('The pretraining code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % ((end_time - start_time) / 60.))
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
+                # temp = []
+                # for param in net.pretrain_params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
 
-    np.savetxt('hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
+                # save the params of network
+                with open(parameters_dir + 'current_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-    # save the params of pretraining
-    save_file = open('pretrain_params.save', 'wb')
-    temp = []
-    for param in net.pretrain_params:
-        temp.append(param.get_value(borrow=True))
-    cPickle.dump(temp, save_file, True)
-    save_file.close()
+                # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                # temp = []
+                # for param in net.params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
 
-    ###########################
-    # TRAINING THE CLASSIFIER #
-    ###########################
-    print '... training the classifier'
+                # stop condition
+                # The relative decrement error between epochs is smaller than eps
+                if len(epoch_error) > 1:
+                    err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
+                    if err < eps:
+                        done_looping = True
 
-    # 5-fold Cross Validation
-    k = 5
+                epoch = epoch + 1
 
-    # Divide train and test data
-    R = range(train_set_y.shape[0])
-    np.random.shuffle(R)
-    ntest = int(len(R) / k)
+            end_time = time.clock()
 
-    ntrain = int(len(R) * (k - 1) / k)
+            print >> sys.stderr, ('The pretraining code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
 
-    shared_train_x = theano.shared(np.ones((14 * 14 * ntrain, n_in), dtype=theano.config.floatX), borrow=True)
-    shared_test_x = theano.shared(np.ones((14 * 14 * ntest, n_in), dtype=theano.config.floatX), borrow=True)
+        else:
+            print 'Continue to pretrain!'
+            # load the pretrain params of network
+            with open(parameters_dir + 'current_pretrain_params.save') as f:
+                pas = cPickle.load(f)
+                params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+                for pa, param in zip(params, net.pretrain_params):
+                    param.set_value(pa)
 
-    acc = np.zeros((k, len(finetune_lr)), dtype=np.float32)
-    cv_acc = np.zeros((len(finetune_lr,)), dtype=np.float32)
+            # save_file = open('/mnt/UAV_Storage/richard/params.save')
+            # pas = cPickle.load(save_file)
+            # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
-    stop = 0
+            # for pa, param in zip(params, net.params):
+            #     param.set_value(pa)
 
-    start_time = timeit.default_timer()
+            # load the epoch
+            with open(parameters_dir + 'current_pretrain_epoch.save') as f:
+                epoch = cPickle.load(f)
 
-    for i in range(len(finetune_lr)):
-        print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+            #########################
+            # PRETRAINING THE MODEL #
+            #########################
+            print '... getting the pretraining functions'
 
-        for b in range(k):
-            print '... loading the data for fold_{0}'.format(b)
-            # Select fold data
-            ftest_index = R[b * ntest: (b + 1) * ntest]
-            ftrain_index = []
-            ftrain_index.extend(R[0: b * ntest])
-            ftrain_index.extend(R[(b + 1) * ntest:])
+            pretraining_fn = net.pretraining_function(
+                train_set_x=shared_pretrain_patches,
+                pretrain_batch_size=pretrain_batch_size,
+                learning_rate=pretrain_lr
+            )
 
-            ftrain = train_set_x[ftrain_index]
-            ftest = train_set_x[ftest_index]
-            #ftrain = train_patches[ftrain_index]
-            #ftest = test_patches[ftest_index]
+            print '... pre-training the model'
+            start_time = time.clock()
 
-            ltrain = train_set_y[ftrain_index]
-            ltest = train_set_y[ftest_index]
+            done_looping = False
+            epoch_error = []
 
-            # train classifier
-            temp_x = np.reshape(ftrain, (-1, 3, 32, 32))
-            temp_x = np.transpose(temp_x, (0, 3, 2, 1))
-            print '... extracting the patches'
-            train_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
-                                                                            n_patches_per_image=14 * 14,
-                                                                            patch_width=patch_width
-                                                                            )
+            while (epoch < pretraining_epochs) and (not done_looping):
 
-            # local contrast normalize
-            train_data_mean = train_patches.mean(axis=0)
-            train_patches -= train_data_mean
+                # save the epoch
+                with open(parameters_dir + 'current_pretrain_epoch.save', 'wb') as f:
+                    cPickle.dump(epoch, f, True)
 
-            # train_normalizers = np.sqrt(10 + train_patches.var(axis=0, ddof=1))
-            # train_normalizers[train_normalizers < 1e-8] = 1.
-            # train_patches /= train_normalizers
+                arr = range(n_train_batches)
+                np.random.shuffle(arr)
+                inhibitor = np.zeros((hidden_layer_size,))  # the inhibitor
 
-            # print '... contrast normalizing'
-            # train_patches = load_cifar10.global_contrast_normalize(train_patches)
-            # print '... zca'
-            # train_patches = load_cifar10.zca(train_patches)
-            train_patches = np.asarray(train_patches, dtype=np.float32)
+                minibatch_error = []
+                for minibatch_index in arr:
+                    minibatch_avg_cost, minibatch_output, gradients = pretraining_fn(minibatch_index, inhibitor)
+                    minibatch_error.append(minibatch_avg_cost)
+                    # print 'Batch {0} gradient abs sum is {1}'.format(minibatch_index, abs(np.asarray(gradients)).sum())
+                    print abs(np.asarray(gradients)).sum()
 
-            shared_train_x.set_value(train_patches, borrow=True)
+                loss = np.mean(minibatch_error)
+                print 'The loss of epoch {0} is {1}'.format(epoch, loss)
 
-            #shared_train_x = load_cifar10.shared_dataset_x(train_patches)
-            shared_train_y = load_cifar10.shared_dataset_y(ltrain)
+                epoch_error.append(loss)
 
-            temp_x = np.reshape(ftest, (-1, 3, 32, 32))
-            temp_x = np.transpose(temp_x, (0, 3, 2, 1))
-            test_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
-                                                                           n_patches_per_image=14 * 14,
-                                                                           patch_width=patch_width
-                                                                           )
-            test_patches -= train_data_mean
-            # test_patches /= train_normalizers
+                np.savetxt(parameters_dir + 'hiddenLayer_output.txt', minibatch_output, fmt='%f', delimiter=',')
 
-            # test_patches = load_cifar10.global_contrast_normalize(test_patches)
-            # test_patches = load_cifar10.zca(test_patches)
-            test_patches = np.asarray(test_patches, dtype=np.float32)
+                # save the params of pretraining
+                with open(parameters_dir + 'current_pretrain_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.pretrain_params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-            #shared_test_x = load_cifar10.shared_dataset_x(test_patches)
-            shared_test_x.set_value(test_patches, borrow=True)
-            shared_test_y = load_cifar10.shared_dataset_y(ltest)
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save', 'wb')
+                # temp = []
+                # for param in net.pretrain_params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
 
-            train_set = (shared_train_x, shared_train_y)
-            test_set = (shared_test_x, shared_test_y)
+                # save the params of network
+                with open(parameters_dir + 'current_params.save', 'wb') as f:
+                    temp = []
+                    for param in net.params:
+                        temp.append(param.get_value(borrow=True))
+                    cPickle.dump(temp, f, True)
 
-            datasets = (train_set, test_set)
+                # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                # temp = []
+                # for param in net.params:
+                #     temp.append(param.get_value(borrow=True))
+                # cPickle.dump(temp, save_file, True)
+                # save_file.close()
 
-            print '... getting the finetuning functions for fold_{0}'.format(b)
-            train_fn, test_model = net.build_finetune_function(datasets=datasets,
+                # stop condition
+                # The relative decrement error between epochs is smaller than eps
+                if len(epoch_error) > 1:
+                    err = (epoch_error[-2] - epoch_error[-1]) / epoch_error[-2]
+                    if err < eps:
+                        done_looping = True
+
+                epoch = epoch + 1
+
+            end_time = time.clock()
+
+            print >> sys.stderr, ('The pretraining code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
+
+    if doFinetune:
+
+        ###########################
+        # TRAINING THE CLASSIFIER #
+        ###########################
+        print '... training the classifier'
+
+        ntrain = train_set_y.shape[0]
+        ntest = test_set_y.shape[0]
+
+        # shared_train_x = theano.shared(np.ones((14 * 14 * ntrain, n_in), dtype=theano.config.floatX), borrow=True)
+        # shared_test_x = theano.shared(np.ones((14 * 14 * ntest, n_in), dtype=theano.config.floatX), borrow=True)
+
+        print '... Preparing the data'
+
+        temp_x = np.reshape(train_set_x, (-1, 3, 32, 32))
+        temp_x = np.transpose(temp_x, (0, 3, 2, 1))
+
+        # train_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
+        #                                                                 n_patches_per_image=14 * 14,
+        #                                                                 patch_width=patch_width
+        #                                                                 )
+        train_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
+                                                                        patch_width=patch_width
+                                                                        )
+
+        train_patches = load_cifar10.global_contrast_normalize(train_patches)
+
+        # local contrast normalize
+        # train_data_mean = train_patches.mean(axis=0)
+        train_patches -= data_mean
+        # normalizers = np.sqrt(10 + train_patches.var(axis=0, ddof=1))
+        # normalizers[normalizers < 1e-8] = 1.
+        train_patches /= normalizers
+
+        # shared_train_x = load_cifar10.shared_dataset_x(train_patches)
+        # shared_train_y = load_cifar10.shared_dataset_y(train_set_y)
+
+        temp_x = np.reshape(test_set_x, (-1, 3, 32, 32))
+        temp_x = np.transpose(temp_x, (0, 3, 2, 1))
+
+        # test_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
+        #                                                                n_patches_per_image=14 * 14,
+        #                                                                patch_width=patch_width
+        #                                                                )
+        test_patches = load_cifar10.extract_patches_for_classification(dataset=temp_x,
+                                                                       patch_width=patch_width
+                                                                       )
+
+        test_patches = load_cifar10.global_contrast_normalize(test_patches)
+
+        test_patches -= data_mean
+        test_patches /= normalizers
+
+        # shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+        # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+        # train_set = (shared_train_x, shared_train_y)
+        # test_set = (shared_test_x, shared_test_y)
+        # datasets = (train_set, test_set)
+
+        n_train_batches = int(ntrain / batch_size)
+        # n_test_batches = int(ntest / batch_size)
+
+        start_time = timeit.default_timer()
+
+        # Split the dataset
+        # The origin dataset is too big to the GPU
+        # n_slice = 10  # split the dataset to n_slice parts
+        n_samples_of_every_slice = int(ntrain / n_slice)
+        n_batches_of_slice = int(n_samples_of_every_slice / batch_size)
+        n_test_batches = int(ntest / batch_size)
+
+        shared_train_x = theano.shared(np.ones((n_samples_of_every_slice * 27 * 27, n_in), dtype=theano.config.floatX), borrow=True)
+
+        # shared_test_x = theano.shared(np.ones((ntest * 27 * 27, n_in), dtype=theano.config.floatX), borrow=True)
+
+        best_test_loss = np.inf
+
+        if isFirstTimeFinetune:
+
+            print 'The first time to finetune!'
+
+            # load the pretrain parameters
+            if os.path.exists(parameters_dir + 'current_pretrain_params.save'):
+
+                with open(parameters_dir + 'current_pretrain_params.save') as f:
+                    pas = cPickle.load(f)
+                    params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+                    for pa, param in zip(params, net.pretrain_params):
+                        param.set_value(pa)
+
+                    # for ind in range(len(pas)):
+                    #     pa = pas[ind]
+                    #     net.pretrain_params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
+
+            else:
+                print 'No pretrain before finetune!'
+
+                # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save')
+                # pas = cPickle.load(save_file)
+
+                # for ind in range(len(pas)):
+                #     pa = pas[ind]
+                #     net.params[ind].set_value(np.asarray(pa, dtype=theano.config.floatX))
+
+                # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+                # for pa, param in zip(params, net.params):
+                #     param.set_value(pa)
+
+            for i in range(len(finetune_lr)):
+                print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                print '... getting the finetuning functions'
+
+                # save the learning rate
+                with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
+                    cPickle.dump(finetune_lr[i], f, True)
+
+                # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
+                # cPickle.dump(finetune_lr[i], save_file, True)
+                # save_file.close()
+
+                epoch = 0
+                while (epoch < training_epochs):
+                    print 'Training epoch {0}'.format(epoch)
+
+                    # save the current finetune epoch
+                    with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
+                        cPickle.dump(epoch, f, True)
+
+                    # epoch += 1
+
+                    for j in range(n_slice):
+                        shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
+                        shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+
+                        # shared_test_x.set_value(test_patches, borrow=True)
+                        # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                        # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+
+                        train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
                                                                batch_size=batch_size,
                                                                learning_rate=finetune_lr[i]
                                                                )
 
-            print '... training the classifier for fold_{0}'.format(b)
-            # early-stopping parameters
-            n_train_batches = int(len(ftrain_index) / batch_size)
-            n_test_batches = int(len(ftest_index) / batch_size)
-            # print 'train batches is {0}'.format(n_train_batches)
-            patience = 10 * n_train_batches  # look as this many examples regardless
-            patience_increase = 2.  # wait this much longer when a new best is found
-            # a relative improvement of this much is considered significant
-            improvement_threshold = 0.995
-            validation_frequency = min(n_train_batches, patience / 2)
-            # go through this many
-            # minibatche before checking the network
-            # on the validation set; in this case we
-            # check every epoch
-            best_validation_loss = np.inf
-            test_score = 0.
+                        for minibatch_index in xrange(n_batches_of_slice):
+                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
 
-            done_looping = False
-            epoch = 0
+                    print 'Testing...'
 
-            while (epoch < training_epochs):
-                print 'Training epoch {0}'.format(epoch)
-                epoch += 1
-                for minibatch_index in xrange(n_train_batches):
-                    minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
-                    iter = (epoch - 1) * n_train_batches + minibatch_index
+                    shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+                    shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
 
-                print 'Testing...'
-                validation_losses = test_model(n_test_batches)
-                this_validation_loss = np.mean(validation_losses)
-                print 'Epoch {0}, validation error {1}'.format(epoch - 1, this_validation_loss * 100)
+                    test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
+                                                         batch_size=batch_size
+                                                         )
 
-                if this_validation_loss < best_validation_loss:
-                    best_validation_loss = this_validation_loss
+                    test_losses = test_model(n_test_batches)
+                    this_test_loss = np.mean(test_losses)
+                    this_min_loss = np.min(test_losses)
+                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
+                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
 
-            # while (epoch < training_epochs) and (not done_looping):
-            #     print 'training epoch {0}'.format(epoch)
-            #     epoch = epoch + 1
-            #     for minibatch_index in xrange(n_train_batches):
-            #         # print 'minibatch index {0}'.format(minibatch_index)
-            #         minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
-            #         iter = (epoch - 1) * n_train_batches + minibatch_index
+                    if this_test_loss < best_test_loss:
+                        best_test_loss = this_test_loss
 
-            #         if (iter + 1) % validation_frequency == 0:
-            #             print 'test...'
-            #             validation_losses = test_model(n_test_batches)
-            #             this_validation_loss = np.mean(validation_losses)
-            #             print 'epoch {0}, minibatch {1}/{2}, validation error {3}%'.format(epoch - 1,
-            #                                                                                minibatch_index + 1,
-            #                                                                                n_train_batches,
-            #                                                                                this_validation_loss * 100.
-            #                                                                                )
-            #             # if we got the best validation score until now
-            #             if this_validation_loss < best_validation_loss:
+                    with open(parameters_dir + 'current_params.save', 'wb') as f:
+                        temp = []
+                        for param in net.params:
+                            temp.append(param.get_value(borrow=True))
+                        cPickle.dump(temp, f, True)
 
-            #                 # improve patience if loss improvement is good
-            #                 # enough
-            #                 if (this_validation_loss < best_validation_loss * improvement_threshold):
-            #                     patience = max(patience, iter * patience_increase)
+                    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                    # tmp = []
+                    # for param in net.params:
+                    #     tmp.append(param.get_value(borrow=True))
+                    # cPickle.dump(tmp, save_file, True)
+                    # save_file.close()
 
-            #                 # save best validation score and iteration number
-            #                 best_validation_loss = this_validation_loss
-            #                 best_iter = iter
+                    epoch += 1
 
-            #                 # save the params of the network
-            #                 save_file = open('params.save', 'wb')
-            #                 temp = []
-            #                 for param in net.params:
-            #                     temp.append(param.get_value(borrow=True))
-            #                 cPickle.dump(temp, save_file, True)
-            #                 save_file.close()
+            end_time = timeit.default_timer()
 
-            #         if patience <= iter:
-            #             done_looping = True
-            #             break
+            print >> sys.stderr, ('The training code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
+        else:
 
-            # the test accuracy
-            acc[b][i] = 1 - best_validation_loss
+            print 'Continue to finetune!'
 
-        cv_acc[i] = np.mean(acc[:, i])
+            # load the parameters
+            with open(parameters_dir + 'current_params.save') as f:
+                pas = cPickle.load(f)
+                params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
-        # stop when accuracy decreases in 2 iterations in a row
-        if i > 1 and cv_acc[i] < cv_acc[i - 1]:
-            stop = stop + 1
-            if stop > 1:
-                break
+                for pa, param in zip(params, net.params):
+                    param.set_value(pa)
 
-        if stop > 0 and cv_acc[i] > cv_acc[i - 1]:
-            stop = 0
+            # save_file = open('/mnt/UAV_Storage/richard/current_params.save')
+            # pas = cPickle.load(save_file)
+            # params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
-    c_opt = finetune_lr[np.argmax(cv_acc)]
+            # for pa, param in zip(params, net.params):
+            #     param.set_value(pa)
 
-    print 'the finetune learning rate which provides the best accuracy is {0}'.format(c_opt)
-    print 'the best accuracy is {0}'.format(max(cv_acc))
+            # load current epoch
+            with open(parameters_dir + 'current_finetune_epoch.save') as f:
+                epoch = cPickle.load(f)
 
-    end_time = timeit.default_timer()
+            # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save')
+            # epoch = cPickle.load(save_file)
+            # save_file.close()
 
-    print 'Optimization complete with best test score of {0}, on iteration {1}'.format(max(cv_acc), best_iter + 1)
+            # load current learning rate
+            with open(parameters_dir + 'current_finetune_lr.save') as f:
+                current_finetune_lr = cPickle.load(f)
 
-    print >> sys.stderr, ('The training code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % ((end_time - start_time) / 60.))
+            # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save')
+            # current_finetune_lr = cPickle.load(save_file)
+            # save_file.close()
+
+            if current_finetune_lr in finetune_lr:
+                ind = finetune_lr.index(current_finetune_lr)
+                finetune_lr = finetune_lr[ind:]
+            else:
+                print 'The current fine tune learn rate is not in finetune_lr!'
+
+            for i in range(len(finetune_lr)):
+                print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                print '... getting the finetuning functions'
+
+                # save the learning rate
+                with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
+                    cPickle.dump(finetune_lr[i], f, True)
+
+                # save_file = open('/mnt/UAV_Storage/richard/current_finetune_lr.save', 'wb')
+                # cPickle.dump(finetune_lr[i], save_file, True)
+                # save_file.close()
+
+                # epoch = 0
+                while (epoch < training_epochs):
+                    print 'Training epoch {0}'.format(epoch)
+
+                    # save the current finetune epoch
+                    with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
+                        cPickle.dump(epoch, f, True)
+
+                    # save_file = open('/mnt/UAV_Storage/richard/current_finetune_epoch.save', 'wb')
+                    # cPickle.dump(epoch, save_file, True)
+                    # save_file.close()
+
+                    # epoch += 1
+
+                    for j in range(n_slice):
+                        shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
+                        shared_train_y = load_cifar10.shared_dataset_y(train_set_y[j * n_samples_of_every_slice:(j + 1) * n_samples_of_every_slice])
+
+                        # shared_test_x.set_value(test_patches, borrow=True)
+                        # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                        # datasets = ((shared_train_x, shared_train_y), (shared_test_x, shared_test_y))
+
+                        train_fn = net.build_finetune_function(datasets=(shared_train_x, shared_train_y),
+                                                               batch_size=batch_size,
+                                                               learning_rate=finetune_lr[i]
+                                                               )
+
+                        for minibatch_index in xrange(n_batches_of_slice):
+                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+
+                    print 'Testing...'
+
+                    shared_test_x = load_cifar10.shared_dataset_x(test_patches)
+                    shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                    test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
+                                                         batch_size=batch_size
+                                                         )
+
+                    test_losses = test_model(n_test_batches)
+                    this_test_loss = np.mean(test_losses)
+                    this_min_loss = np.min(test_losses)
+                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
+                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+
+                    if this_test_loss < best_test_loss:
+                        best_test_loss = this_test_loss
+
+                    with open(parameters_dir + 'current_params.save', 'wb') as f:
+                        tmp = []
+                        for param in net.params:
+                            tmp.append(param.get_value(borrow=True))
+                        cPickle.dump(tmp, f, True)
+
+                    # save_file = open('/mnt/UAV_Storage/richard/params.save', 'wb')
+                    # tmp = []
+                    # for param in net.params:
+                    #     tmp.append(param.get_value(borrow=True))
+                    # cPickle.dump(tmp, save_file, True)
+                    # save_file.close()
+
+                    epoch += 1
+
+                epoch = 0
+
+            end_time = timeit.default_timer()
+
+            print >> sys.stderr, ('The training code for file ' +
+                                  os.path.split(__file__)[1] +
+                                  ' ran for %.2fm' % ((end_time - start_time) / 60.))
 
 
 if __name__ == '__main__':
 
-    l2_reg = 0.0001 / 2  # weight of weight decay
-    finetune_lr = [0.01, 0.002, 0.0004, 8e-5, 1.6e-5]
+    with open('config.yaml', 'r') as f:
+        config = yaml.load(f)
 
-    training_function(pretrain_lr=0.005,  # 0.15
-                      finetune_lr=finetune_lr,  # 0.05
-                      n_in=6 * 6 * 3,
-                      hidden_layer_size=1600,
-                      n_out=10,
-                      pretraining_epochs=10,
-                      training_epochs=300,
-                      pretrain_batch_size=1600,
-                      batch_size=100,
-                      eps=1e-6,
-                      classifier='LR',
-                      l2_reg=l2_reg,
-                      activation=Relu,
-                      sparsity_rate=0.9,
-                      continue_train=False
-                      )
+    training_function(config)
 
     print 'DONE!'
