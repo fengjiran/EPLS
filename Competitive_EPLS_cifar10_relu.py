@@ -27,6 +27,30 @@ def step_func(x):
     return x >= 0
 
 
+def to_categorical(y, nb_classes=None):
+    '''
+    convert class vector (intergers from 0 to nb_classes-1) to binary class matrix.
+
+    # Arguments
+        y: class vector to be converted into a matrix
+        nb_classes: total number of classes
+
+    # Returns
+        A binary matrix representation of the input.
+    '''
+    y = np.array(y, dtype='int')
+
+    if not nb_classes:
+        nb_classes = np.max(y) + 1
+
+    Y = -1 * np.ones((len(y), nb_classes))
+
+    for i in range(len(y)):
+        Y[i, y[i]] = 1
+
+    return Y
+
+
 class HiddenLayer(object):
 
     def __init__(self,
@@ -64,7 +88,7 @@ class HiddenLayer(object):
             W_values = np.asarray(
                 rng.normal(
                     loc=0,
-                    scale=0.1,
+                    scale=0.01,
                     size=(n_in, n_out)
                 ),
                 dtype=theano.config.floatX
@@ -237,7 +261,7 @@ class LogisticRegression(object):
     determine a class membership probability.
     """
 
-    def __init__(self, input, n_in, n_out, W=None, b=None):
+    def __init__(self, input, n_in, n_out, name='LR', W=None, b=None):
         """ Initialize the parameters of the logistic regression
 
         :type input: theano.tensor.TensorType
@@ -271,6 +295,23 @@ class LogisticRegression(object):
             )
         else:
             self.W = W
+
+        # if W is None:
+        #     self.W = theano.shared(
+        #         value=np.asarray(
+        #             rng.uniform(
+        #                 low=-np.sqrt(6. / (n_in + n_out)),
+        #                 high=np.sqrt(6. / (n_in + n_out)),
+        #                 size=(n_in, n_out)
+        #             ),
+        #             dtype=theano.config.floatX
+        #         ),
+        #         name='W',
+        #         borrow=True
+        #     )
+        # else:
+        #     self.W = W
+
         # if W is None:
         #     self.W = theano.shared(
         #         value=np.zeros(
@@ -316,6 +357,8 @@ class LogisticRegression(object):
 
         # keep track of model input
         self.input = input
+
+        self.name = name
 
     def negative_log_likelihood(self, y):
         """Return the mean of the negative log-likelihood of the prediction
@@ -377,8 +420,8 @@ class OVASVMLayer(object):
     """SVM-like layer
     """
 
-    def __init__(self, input, n_in, n_out, W=None, b=None):
-        """ Initialize the parameters of the logistic regression
+    def __init__(self, input, n_in, n_out, name='svm', W=None, b=None):
+        """ Initialize the parameters of the svm
 
         :type input: theano.tensor.TensorType
         :param input: symbolic variable that describes the input of the
@@ -454,6 +497,8 @@ class OVASVMLayer(object):
 
         self.L2 = (self.W ** 2).sum()
 
+        self.name = name
+
     def hinge(self, u):
         return T.maximum(0, 1 - u)
 
@@ -482,6 +527,12 @@ class OVASVMLayer(object):
         else:
             raise NotImplementedError()
 
+    # def errors(self, y1):
+
+    #     a = y1[T.arange(self.y_pred.shape[0]), self.y_pred]
+
+    #     return 1 - T.mean((a + 1) / 2)
+
 
 class Network_epls(object):
 
@@ -496,7 +547,8 @@ class Network_epls(object):
                  activation,
                  classifier='LR',
                  sparsity_rate=0.5,
-                 params=None
+                 params=None,
+                 polarity_split=False
                  ):
         '''
         classifier: LR or SVM
@@ -504,8 +556,11 @@ class Network_epls(object):
         # allocate symbolic variables for the data
         self.x = T.matrix('x')
         self.y = T.ivector('y')
+        self.y1 = T.imatrix('y1')  # one-hot encoded labels as {-1, 1}, for svm
+
         self.inhibitor = T.dvector('inhibitor')
         self.l2_reg = T.dscalar('l2_reg')
+        self.l1_reg = T.dscalar('l1_reg')
 
         self.hiddenLayer = HiddenLayer(rng=rng,
                                        input=self.x,
@@ -516,30 +571,61 @@ class Network_epls(object):
                                        activation=activation
                                        )
 
-        classifier_input = T.transpose(self.hiddenLayer.output, (1, 0))  # (1600, N*14*14)
-        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 27, 27))   # (1600, N, 14, 14)
-        classifier_input2 = pool.pool_2d(input=classifier_input1,
-                                         ds=(13, 13),
-                                         ignore_border=True
-                                         )  # (1600, N, 2, 2)
-        classifier_input3 = T.transpose(classifier_input2, (1, 0, 2, 3))  # (N, 1600, 2, 2)
-        classifier_input4 = T.reshape(classifier_input3, (mini_batch, 4 * hidden_layer_size))  # (N, 4*1600)
+        # the cost and parameters of EPLS layer
+        self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
+                                                                      pretrain_mini_batch,
+                                                                      n_samples,
+                                                                      sparsity_rate
+                                                                      )
+
+        self.pretrain_params = self.hiddenLayer.params
 
         # polarity splitting
-        classifier_input = T.transpose(self.hiddenLayer.output_mirror, (1, 0))  # (1600, N*14*14)
-        classifier_input1 = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 27, 27))   # (1600, N, 14, 14)
-        classifier_input2 = pool.pool_2d(input=classifier_input1,
-                                         ds=(13, 13),
-                                         ignore_border=True
-                                         )  # (1600, N, 2, 2)
-        classifier_input3 = T.transpose(classifier_input2, (1, 0, 2, 3))  # (N, 1600, 2, 2)
-        classifier_input4_mirror = T.reshape(classifier_input3, (mini_batch, 4 * hidden_layer_size))  # (N, 4*1600)
+        if polarity_split:
 
-        classifier_input = T.concatenate([classifier_input4, classifier_input4_mirror], axis=1)
+            classifier_input = T.concatenate([self.hiddenLayer.output, self.hiddenLayer.output_mirror], axis=1)  # (N*27*27, 1600*2)
+
+            classifier_input = T.transpose(classifier_input, (1, 0))  # (1600*2, N*27*27)
+
+            classifier_input = T.reshape(classifier_input, (hidden_layer_size * 2, mini_batch, 27, 27))   # (1600*2, N, 27, 27)
+
+            classifier_input = pool.pool_2d(input=classifier_input,
+                                            ds=(13, 13),
+                                            ignore_border=True
+                                            )  # (1600*2, N, 2, 2)
+
+            classifier_input = T.transpose(classifier_input, (1, 0, 2, 3))  # (N, 1600*2, 2, 2)
+
+            classifier_input = T.reshape(classifier_input, (mini_batch, 4 * 2 * hidden_layer_size))  # (N, 8*1600)
+
+            hidden_layer_size = 4 * 2 * hidden_layer_size
+        else:
+            #
+            classifier_input = T.transpose(self.hiddenLayer.output, (1, 0))
+
+            classifier_input = T.reshape(classifier_input, (hidden_layer_size, mini_batch, 27, 27))
+
+            classifier_input = pool.pool_2d(input=classifier_input,
+                                            ds=(13, 13),
+                                            ignore_border=True
+                                            )
+
+            classifier_input = T.transpose(classifier_input, (1, 0, 2, 3))
+
+            classifier_input = T.reshape(classifier_input, (mini_batch, 4 * hidden_layer_size))  # (N, 8*1600)
+
+            hidden_layer_size = 4 * hidden_layer_size
+
+        # self.dropout = DropoutLayer(input=classifier_input,
+        #                             n_in=4 * 2 * hidden_layer_size,
+        #                             n_out=4 * 2 * hidden_layer_size
+        #                             )
+
+        # classifier_input = self.dropout.output
 
         if classifier == 'LR':
             self.classifier = LogisticRegression(input=classifier_input,
-                                                 n_in=4 * 2 * hidden_layer_size,
+                                                 n_in=hidden_layer_size,
                                                  n_out=n_out,
                                                  W=params[2] if params else None,
                                                  b=params[3] if params else None
@@ -551,16 +637,20 @@ class Network_epls(object):
             #                                                             n_samples
             #                                                             )
 
-            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
-                                                                          pretrain_mini_batch,
-                                                                          n_samples,
-                                                                          sparsity_rate
-                                                                          )
-            self.pretrain_params = self.hiddenLayer.params
+            # self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
+            #                                                               pretrain_mini_batch,
+            #                                                               n_samples,
+            #                                                               sparsity_rate
+            #                                                               )
+            # self.pretrain_params = self.hiddenLayer.params
 
             # the cost and parameters of classifier layer
-            # self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
-            self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
+            l1 = (abs(self.hiddenLayer.W).sum() + abs(self.classifier.W).sum()) / mini_batch
+
+            l2_sqr = ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum()) / (2 * mini_batch)
+
+            self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * l2_sqr + self.l1_reg * l1
+            # self.classifier_cost = self.classifier.negative_log_likelihood(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
             self.classifier_params = self.classifier.params
             self.errors = self.classifier.errors(self.y)
 
@@ -571,7 +661,7 @@ class Network_epls(object):
 
         else:
             self.classifier = OVASVMLayer(input=classifier_input,
-                                          n_in=4 * 2 * hidden_layer_size,
+                                          n_in=hidden_layer_size,
                                           n_out=n_out,
                                           W=params[2] if params else None,
                                           b=params[3] if params else None
@@ -583,17 +673,21 @@ class Network_epls(object):
             #                                                             n_samples
             #                                                             )
 
-            self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
-                                                                          pretrain_mini_batch,
-                                                                          n_samples,
-                                                                          sparsity_rate
-                                                                          )
+            # self.pretrain_cost = self.hiddenLayer.competitive_epls_scan_k(self.inhibitor,
+            #                                                               pretrain_mini_batch,
+            #                                                               n_samples,
+            #                                                               sparsity_rate
+            #                                                               )
 
-            self.pretrain_params = self.hiddenLayer.params
+            # self.pretrain_params = self.hiddenLayer.params
 
             # the cost and parameters of classifier layer
-            # self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum())
-            self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
+            l1 = (abs(self.hiddenLayer.W).sum() + abs(self.classifier.W).sum()) / mini_batch
+
+            l2_sqr = ((self.classifier.W ** 2).sum() + (self.hiddenLayer.W ** 2).sum()) / (2 * mini_batch)
+
+            self.classifier_cost = self.classifier.ova_svm_cost(self.y1) + self.l2_reg * l2_sqr + self.l1_reg * l1
+            # self.classifier_cost = self.classifier.ova_svm_cost(self.y) + self.l2_reg * (self.classifier.W ** 2).sum()
             self.classifier_params = self.classifier.params
             self.errors = self.classifier.errors(self.y)
 
@@ -681,14 +775,28 @@ class Network_epls(object):
         # gradients1 = gparams[0]
         # gradients2 = gparams[2]
 
+        # if self.classifier.name == 'svm':
+        #     givens = {
+        #         self.x: train_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y1: train_set_y[index * batch_size: (index + 1) * batch_size]
+        #     }
+
+        # else:
+        #     givens = {
+        #         self.x: train_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y: train_set_y[index * batch_size: (index + 1) * batch_size]
+        #     }
+
+        givens = {
+            self.x: train_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+            self.y: train_set_y[index * batch_size: (index + 1) * batch_size]
+        }
+
         train_fn = theano.function(
-            inputs=[index, self.l2_reg],
-            outputs=self.classifier_cost,
+            inputs=[index, self.l2_reg, self.l1_reg],
+            outputs=[self.classifier_cost, self.errors],
             updates=updates,
-            givens={
-                self.x: train_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
-                self.y: train_set_y[index * batch_size: (index + 1) * batch_size]
-            },
+            givens=givens,
             name='train'
         )
 
@@ -717,13 +825,27 @@ class Network_epls(object):
 
         index = T.lscalar('index')
 
+        # if self.classifier.name == 'svm':
+        #     givens = {
+        #         self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y1: test_set_y[index * batch_size: (index + 1) * batch_size]
+        #     }
+
+        # else:
+        #     givens = {
+        #         self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+        #         self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+        #     }
+
+        givens = {
+            self.x: test_set_x[index * batch_size * 729: (index + 1) * batch_size * 729],
+            self.y: test_set_y[index * batch_size: (index + 1) * batch_size]
+        }
+
         test_score_i = theano.function(
             inputs=[index],
             outputs=self.errors,
-            givens={
-                self.x: test_set_x[index * batch_size * 27 * 27:(index + 1) * batch_size * 27 * 27],
-                self.y: test_set_y[index * batch_size:(index + 1) * batch_size]
-            },
+            givens=givens,
             name='test'
         )
 
@@ -738,6 +860,8 @@ def training_function(config):
     '''
     '''
     rng = np.random.RandomState(1234)
+
+    polarity_split = config['polarity_split']
     n_slice = config['n_slice']
     patch_width = config['patch_width']
     n_in = config['n_in']
@@ -763,6 +887,7 @@ def training_function(config):
     pretrain_lr = config['pretrain_lr']
     finetune_lr = config['finetune_lr']
     l2_reg = config['l2_reg']
+    l1_reg = config['l1_reg']
 
     use_dropout = config['use_dropout']
 
@@ -774,8 +899,12 @@ def training_function(config):
 
     parameters_dir = config['parameters_dir']
 
+    # print the parameters to the files
+
     # print pretrain_patches.shape
     print '... building the model'
+    with open('log', 'a+') as f:
+        print >> f, '... building the model'
 
     # construct the network
     net = Network_epls(rng=rng,
@@ -787,7 +916,8 @@ def training_function(config):
                        n_samples=NSPL,
                        sparsity_rate=sparsity_rate,
                        activation=activation,
-                       classifier=classifier
+                       classifier=classifier,
+                       polarity_split=polarity_split
                        )
 
     # save parameters of net
@@ -799,8 +929,14 @@ def training_function(config):
     # save_file.close()
 
     print '... loading the data'
+    with open('log', 'a+') as f:
+        print >> f, '... loading the data'
 
     [(train_set_x, train_set_y), (test_set_x, test_set_y)] = load_cifar10.load_cifar_10()
+
+    # if classifier == 'svm':
+    #     train_set_y = to_categorical(train_set_y, 10)
+    #     test_set_y = to_categorical(test_set_y, 10)
 
     temp_x = np.reshape(train_set_x, (-1, 3, 32, 32))
     temp_x = np.transpose(temp_x, (0, 3, 2, 1))
@@ -837,11 +973,15 @@ def training_function(config):
         if isFirstTimePretrain:
 
             print 'The first time to pretrain!'
+            with open('log', 'a+') as f:
+                print >> f, 'The first time to pretrain!'
 
             #########################
             # PRETRAINING THE MODEL #
             #########################
             print '... getting the pretraining functions'
+            with open('log', 'a+') as f:
+                print >> f, '... getting the pretraining functions'
 
             pretraining_fn = net.pretraining_function(
                 train_set_x=shared_pretrain_patches,
@@ -850,6 +990,9 @@ def training_function(config):
             )
 
             print '... pre-training the model'
+            with open('log', 'a+') as f:
+                print >> f, '... pre-training the model'
+
             start_time = time.clock()
 
             epoch = 0
@@ -878,7 +1021,10 @@ def training_function(config):
                     print abs(np.asarray(gradients)).sum()
 
                 loss = np.mean(minibatch_error)
+
                 print 'The loss of epoch {0} is {1}'.format(epoch, loss)
+                with open('log', 'a+') as f:
+                    print >> f, 'The loss of epoch {0} is {1}'.format(epoch, loss)
 
                 epoch_error.append(loss)
 
@@ -929,6 +1075,9 @@ def training_function(config):
 
         else:
             print 'Continue to pretrain!'
+            with open('log', 'a+') as f:
+                print >> f, 'Continue to pretrain!'
+
             # load the pretrain params of network
             with open(parameters_dir + 'current_pretrain_params.save') as f:
                 pas = cPickle.load(f)
@@ -951,6 +1100,8 @@ def training_function(config):
             # PRETRAINING THE MODEL #
             #########################
             print '... getting the pretraining functions'
+            with open('log', 'a+') as f:
+                print >> f, '... getting the pretraining functions'
 
             pretraining_fn = net.pretraining_function(
                 train_set_x=shared_pretrain_patches,
@@ -959,6 +1110,9 @@ def training_function(config):
             )
 
             print '... pre-training the model'
+            with open('log', 'a+') as f:
+                print >> f, '... pre-training the model'
+
             start_time = time.clock()
 
             done_looping = False
@@ -983,6 +1137,8 @@ def training_function(config):
 
                 loss = np.mean(minibatch_error)
                 print 'The loss of epoch {0} is {1}'.format(epoch, loss)
+                with open('log', 'a+') as f:
+                    print >> f, 'The loss of epoch {0} is {1}'.format(epoch, loss)
 
                 epoch_error.append(loss)
 
@@ -1037,6 +1193,8 @@ def training_function(config):
         # TRAINING THE CLASSIFIER #
         ###########################
         print '... training the classifier'
+        with open('log', 'a+') as f:
+            print >> f, '... training the classifier'
 
         ntrain = train_set_y.shape[0]
         ntest = test_set_y.shape[0]
@@ -1045,6 +1203,8 @@ def training_function(config):
         # shared_test_x = theano.shared(np.ones((14 * 14 * ntest, n_in), dtype=theano.config.floatX), borrow=True)
 
         print '... Preparing the data'
+        with open('log', 'a+') as f:
+            print >> f, '... Preparing the data'
 
         temp_x = np.reshape(train_set_x, (-1, 3, 32, 32))
         temp_x = np.transpose(temp_x, (0, 3, 2, 1))
@@ -1113,6 +1273,8 @@ def training_function(config):
         if isFirstTimeFinetune:
 
             print 'The first time to finetune!'
+            with open('log', 'a+') as f:
+                print >> f, 'The first time to finetune!'
 
             # load the pretrain parameters
             if os.path.exists(parameters_dir + 'current_pretrain_params.save'):
@@ -1130,6 +1292,8 @@ def training_function(config):
 
             else:
                 print 'No pretrain before finetune!'
+                with open('log', 'a+') as f:
+                    print >> f, 'No pretrain before finetune!'
 
                 # save_file = open('/mnt/UAV_Storage/richard/pretrain_params.save')
                 # pas = cPickle.load(save_file)
@@ -1145,7 +1309,12 @@ def training_function(config):
 
             for i in range(len(finetune_lr)):
                 print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                with open('log', 'a+') as f:
+                    print >> f, '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+
                 print '... getting the finetuning functions'
+                with open('log', 'a+') as f:
+                    print >> f, '... getting the finetuning functions'
 
                 # save the learning rate
                 with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
@@ -1158,12 +1327,19 @@ def training_function(config):
                 epoch = 0
                 while (epoch < training_epochs):
                     print 'Training epoch {0}'.format(epoch)
+                    with open('log', 'a+') as f:
+                        print >> f, 'Training epoch {0}'.format(epoch)
 
                     # save the current finetune epoch
                     with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
                         cPickle.dump(epoch, f, True)
 
                     # epoch += 1
+                    # DropoutLayer.SetDropoutOn()
+                    # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
+
+                    train_errors = []
+                    loss = []
 
                     for j in range(n_slice):
                         shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
@@ -1180,12 +1356,31 @@ def training_function(config):
                                                                )
 
                         for minibatch_index in xrange(n_batches_of_slice):
-                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+                            minibatch_avg_cost, minibatch_error = train_fn(minibatch_index, l2_reg, l1_reg)
+                            train_errors.append(minibatch_error)
+                            loss.append(minibatch_avg_cost)
 
-                    print 'Testing...'
+                    print 'Epoch {0}, Mean loss: {1}'.format(epoch, np.mean(loss))
+                    print 'Epoch {0}, Minimum loss: {1}'.format(epoch, np.min(loss))
+                    with open('log', 'a+') as f:
+                        print >> f, 'Epoch {0}, Mean loss: {1}'.format(epoch, np.mean(loss))
+                        print >> f, 'Epoch {0}, Minimum loss: {1}'.format(epoch, np.min(loss))
+
+                    print 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                    print 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
+                    with open('log', 'a+') as f:
+                        print >> f, 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                        print >> f, 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
+
+                    print '... Testing...'
+                    with open('log', 'a+') as f:
+                        print >> f, '... Testing...'
 
                     shared_test_x = load_cifar10.shared_dataset_x(test_patches)
                     shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                    # DropoutLayer.SetDropoutOff()
+                    # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
                                                          batch_size=batch_size
@@ -1194,8 +1389,12 @@ def training_function(config):
                     test_losses = test_model(n_test_batches)
                     this_test_loss = np.mean(test_losses)
                     this_min_loss = np.min(test_losses)
-                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
-                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+
+                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
+                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                    with open('log', 'a+') as f:
+                        print >> f, '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
+                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
 
                     if this_test_loss < best_test_loss:
                         best_test_loss = this_test_loss
@@ -1223,6 +1422,8 @@ def training_function(config):
         else:
 
             print 'Continue to finetune!'
+            with open('log', 'a+') as f:
+                print >> f, 'Continue to finetune!'
 
             # load the parameters
             with open(parameters_dir + 'current_params.save') as f:
@@ -1265,6 +1466,10 @@ def training_function(config):
                 print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
                 print '... getting the finetuning functions'
 
+                with open('log', 'a+') as f:
+                    print >> f, '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
+                    print >> f, '... getting the finetuning functions'
+
                 # save the learning rate
                 with open(parameters_dir + 'current_finetune_lr.save', 'wb') as f:
                     cPickle.dump(finetune_lr[i], f, True)
@@ -1274,8 +1479,11 @@ def training_function(config):
                 # save_file.close()
 
                 # epoch = 0
+
                 while (epoch < training_epochs):
                     print 'Training epoch {0}'.format(epoch)
+                    with open('log', 'a+') as f:
+                        print >> f, 'Training epoch {0}'.format(epoch)
 
                     # save the current finetune epoch
                     with open(parameters_dir + 'current_finetune_epoch.save', 'wb') as f:
@@ -1286,6 +1494,11 @@ def training_function(config):
                     # save_file.close()
 
                     # epoch += 1
+                    # DropoutLayer.SetDropoutOn()
+                    # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
+
+                    train_errors = []
+                    loss = []
 
                     for j in range(n_slice):
                         shared_train_x.set_value(train_patches[j * n_samples_of_every_slice * 27 * 27:(j + 1) * n_samples_of_every_slice * 27 * 27], borrow=True)
@@ -1302,12 +1515,31 @@ def training_function(config):
                                                                )
 
                         for minibatch_index in xrange(n_batches_of_slice):
-                            minibatch_avg_cost = train_fn(minibatch_index, l2_reg)
+                            minibatch_avg_cost, minibatch_error = train_fn(minibatch_index, l2_reg, l1_reg)
+                            train_errors.append(minibatch_error)
+                            loss.append(minibatch_avg_cost)
 
-                    print 'Testing...'
+                    print 'Epoch {0}, Mean loss: {1}'.format(epoch, np.mean(loss))
+                    print 'Epoch {0}, Minimum loss: {1}'.format(epoch, np.min(loss))
+                    with open('log', 'a+') as f:
+                        print >> f, 'Epoch {0}, Mean loss: {1}'.format(epoch, np.mean(loss))
+                        print >> f, 'Epoch {0}, Minimum loss: {1}'.format(epoch, np.min(loss))
+
+                    print 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                    print 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
+                    with open('log', 'a+') as f:
+                        print >> f, 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                        print >> f, 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
+
+                    print '... Testing...'
+                    with open('log', 'a+') as f:
+                        print >> f, '... Testing...'
 
                     shared_test_x = load_cifar10.shared_dataset_x(test_patches)
                     shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
+
+                    # DropoutLayer.SetDropoutOff()
+                    # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
                                                          batch_size=batch_size
@@ -1316,8 +1548,11 @@ def training_function(config):
                     test_losses = test_model(n_test_batches)
                     this_test_loss = np.mean(test_losses)
                     this_min_loss = np.min(test_losses)
-                    print 'Epoch {0}, Test error {1}%'.format(epoch, this_test_loss * 100)
-                    print 'Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
+                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                    with open('log', 'a+') as f:
+                        print >> f, '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
+                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
 
                     if this_test_loss < best_test_loss:
                         best_test_loss = this_test_loss
