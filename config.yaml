@@ -6,29 +6,29 @@ polarity_split: False
 # Network structure
 n_in: 108
 n_out: 10
-hidden_layer_size: 6000
+hidden_layer_size: 1600 #6000
 
 # Pretrain samples number
 NSPL: 400000
 patch_width: 6
 
 # Epoch
-pretraining_epochs: 60
+pretraining_epochs: 90
 finetuning_epochs: 60
 
 # The learning rate of pretrain and finetune
-pretrain_lr: 0.0005
-finetune_lr: [0.005] #[0.005, 0.0001, 8.0e-5, 1.6e-6]
+pretrain_lr: 0.0002
+finetune_lr: [0.005, 0.001, 0.0005] #[0.005, 0.0001, 8.0e-5, 1.6e-6]
 
 # Batch size 
 pretrain_batch_size: 1600
 finetune_batch_size: 50
 
 # Weight decay
-l2_reg: 0.001
+l2_reg: 0 #0.001
 
 # losso regular
-l1_reg: 0.004
+l1_reg: 0 #0.004
 
 sparsity_rate: 0.99
 
@@ -43,7 +43,7 @@ eps: 1.0e-6
 use_dropout: True
 
 doPretrain: False
-isFirstTimePretrain: False
+isFirstTimePretrain: True
 
 doFinetune: True
 isFirstTimeFinetune: True

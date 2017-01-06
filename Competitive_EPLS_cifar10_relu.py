@@ -18,8 +18,9 @@ from theano.tensor.signal import pool
 import load_cifar10
 
 
-def Relu(x):
-    return T.maximum(0, x)
+def Relu(x, alpha=0.1):
+    # return T.maximum(0, x)
+    return T.nnet.relu(x, alpha=alpha)
 
 
 # step function, the gradient of relu
@@ -215,8 +216,9 @@ class HiddenLayer(object):
                                        )
 
         self.target = results[-1]
+        # self.target = 2 * self.target - 1  # remapping in [-1, 1]
 
-        return 0.5 * T.sum((self.output - results[-1]) ** 2) / pretrain_mini_batch
+        return 0.5 * T.sum((self.output - self.target) ** 2) / pretrain_mini_batch
 
 
 class DropoutLayer(object):
@@ -224,7 +226,7 @@ class DropoutLayer(object):
     seed_common = np.random.RandomState(0)
     layers = []
 
-    def __init__(self, input, n_in, n_out, prob_drop=0.5):
+    def __init__(self, input, n_in, n_out, prob_drop=0.2):
 
         self.prob_drop = prob_drop
         self.prob_keep = 1.0 - prob_drop
@@ -548,7 +550,8 @@ class Network_epls(object):
                  classifier='LR',
                  sparsity_rate=0.5,
                  params=None,
-                 polarity_split=False
+                 polarity_split=False,
+                 use_dropout=True
                  ):
         '''
         classifier: LR or SVM
@@ -616,12 +619,14 @@ class Network_epls(object):
 
             hidden_layer_size = 4 * hidden_layer_size
 
-        # self.dropout = DropoutLayer(input=classifier_input,
-        #                             n_in=4 * 2 * hidden_layer_size,
-        #                             n_out=4 * 2 * hidden_layer_size
-        #                             )
+        if use_dropout:
 
-        # classifier_input = self.dropout.output
+            self.dropout = DropoutLayer(input=classifier_input,
+                                        n_in=hidden_layer_size,
+                                        n_out=hidden_layer_size
+                                        )
+
+            classifier_input = self.dropout.output
 
         if classifier == 'LR':
             self.classifier = LogisticRegression(input=classifier_input,
@@ -917,7 +922,8 @@ def training_function(config):
                        sparsity_rate=sparsity_rate,
                        activation=activation,
                        classifier=classifier,
-                       polarity_split=polarity_split
+                       polarity_split=polarity_split,
+                       use_dropout=use_dropout
                        )
 
     # save parameters of net
@@ -961,6 +967,7 @@ def training_function(config):
 
         pretrain_patches -= data_mean
         pretrain_patches /= normalizers
+        pretrain_patches = load_cifar10.zca(pretrain_patches)
 
         pretrain_patches = np.asarray(pretrain_patches, dtype=np.float32)
 
@@ -1225,6 +1232,7 @@ def training_function(config):
         # normalizers = np.sqrt(10 + train_patches.var(axis=0, ddof=1))
         # normalizers[normalizers < 1e-8] = 1.
         train_patches /= normalizers
+        train_patches = load_cifar10.zca(train_patches)
 
         # shared_train_x = load_cifar10.shared_dataset_x(train_patches)
         # shared_train_y = load_cifar10.shared_dataset_y(train_set_y)
@@ -1244,6 +1252,7 @@ def training_function(config):
 
         test_patches -= data_mean
         test_patches /= normalizers
+        test_patches = load_cifar10.zca(test_patches)
 
         # shared_test_x = load_cifar10.shared_dataset_x(test_patches)
         # shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
@@ -1335,7 +1344,8 @@ def training_function(config):
                         cPickle.dump(epoch, f, True)
 
                     # epoch += 1
-                    # DropoutLayer.SetDropoutOn()
+                    if use_dropout:
+                        DropoutLayer.SetDropoutOn()
                     # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     train_errors = []
@@ -1379,7 +1389,8 @@ def training_function(config):
                     shared_test_x = load_cifar10.shared_dataset_x(test_patches)
                     shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
 
-                    # DropoutLayer.SetDropoutOff()
+                    if use_dropout:
+                        DropoutLayer.SetDropoutOff()
                     # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
@@ -1494,7 +1505,8 @@ def training_function(config):
                     # save_file.close()
 
                     # epoch += 1
-                    # DropoutLayer.SetDropoutOn()
+                    if use_dropout:
+                        DropoutLayer.SetDropoutOn()
                     # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     train_errors = []
@@ -1538,7 +1550,8 @@ def training_function(config):
                     shared_test_x = load_cifar10.shared_dataset_x(test_patches)
                     shared_test_y = load_cifar10.shared_dataset_y(test_set_y)
 
-                    # DropoutLayer.SetDropoutOff()
+                    if use_dropout:
+                        DropoutLayer.SetDropoutOff()
                     # print 'dropout flag on: {}'.format(net.dropout.flag_on.get_value())
 
                     test_model = net.build_test_function(dataset=(shared_test_x, shared_test_y),
