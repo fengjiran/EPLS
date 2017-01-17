@@ -6,7 +6,7 @@ polarity_split: False
 # Network structure
 n_in: 108
 n_out: 10
-hidden_layer_size: 1600 #6000
+hidden_layer_size: 3200 #6000
 
 # Pretrain samples number
 NSPL: 400000
@@ -21,16 +21,16 @@ pretrain_lr: 0.0002
 finetune_lr: [0.005, 0.001, 0.0005] #[0.005, 0.0001, 8.0e-5, 1.6e-6]
 
 # Batch size 
-pretrain_batch_size: 1600
+pretrain_batch_size: 100
 finetune_batch_size: 50
 
 # Weight decay
-l2_reg: 0 #0.001
+l2_reg: 0 #0.001 #0
 
 # losso regular
 l1_reg: 0 #0.004
 
-sparsity_rate: 0.99
+sparsity_rate: 0.9
 
 # Classifier
 classifier: LR
@@ -41,11 +41,13 @@ activation: Relu # T.nnet.sigmoid
 eps: 1.0e-6
 
 use_dropout: True
+dropout_rate: 0.2
+max_col_norm: 15
 
-doPretrain: False
-isFirstTimePretrain: True
+doPretrain: 0
+isFirstTimePretrain: 1
 
-doFinetune: True
-isFirstTimeFinetune: True
+doFinetune: 1
+isFirstTimeFinetune: 0
 
 parameters_dir: /mnt/UAV_Storage/richard/epls_parameters/
