@@ -5,6 +5,7 @@ import sys
 import time
 import timeit
 import cPickle
+import csv
 
 import yaml
 
@@ -18,7 +19,7 @@ from theano.tensor.signal import pool
 import load_cifar10
 
 
-def Relu(x, alpha=0.1):
+def Relu(x, alpha=0):
     # return T.maximum(0, x)
     return T.nnet.relu(x, alpha=alpha)
 
@@ -219,6 +220,7 @@ class HiddenLayer(object):
         # self.target = 2 * self.target - 1  # remapping in [-1, 1]
 
         return 0.5 * T.sum((self.output - self.target) ** 2) / pretrain_mini_batch
+        # return 0.5 * T.sum((self.lin_output - self.target) ** 2) / pretrain_mini_batch
 
 
 class DropoutLayer(object):
@@ -551,7 +553,9 @@ class Network_epls(object):
                  sparsity_rate=0.5,
                  params=None,
                  polarity_split=False,
-                 use_dropout=True
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 max_col_norm=3
                  ):
         '''
         classifier: LR or SVM
@@ -564,6 +568,9 @@ class Network_epls(object):
         self.inhibitor = T.dvector('inhibitor')
         self.l2_reg = T.dscalar('l2_reg')
         self.l1_reg = T.dscalar('l1_reg')
+
+        self.use_dropout = use_dropout
+        self.max_col_norm = max_col_norm
 
         self.hiddenLayer = HiddenLayer(rng=rng,
                                        input=self.x,
@@ -623,7 +630,8 @@ class Network_epls(object):
 
             self.dropout = DropoutLayer(input=classifier_input,
                                         n_in=hidden_layer_size,
-                                        n_out=hidden_layer_size
+                                        n_out=hidden_layer_size,
+                                        prob_drop=dropout_rate
                                         )
 
             classifier_input = self.dropout.output
@@ -772,10 +780,25 @@ class Network_epls(object):
         gparams = [T.grad(self.classifier_cost, param)
                    for param in self.params]
 
-        updates = [
-            (param, param - learning_rate * gparam)
-            for param, gparam in zip(self.params, gparams)
-        ]
+        if self.use_dropout:
+
+            updates = []
+
+            for param, gparam in zip(self.params, gparams):
+                stepped_param = param - learning_rate * gparam
+
+                if param.get_value(borrow=True).ndim == 2:
+                    col_norms = T.sqrt(T.sum(T.sqr(stepped_param), axis=0))
+                    desired_norms = T.clip(col_norms, 0, self.max_col_norm)
+                    stepped_param = stepped_param * (desired_norms / (1e-7 + col_norms))
+
+                updates.append((param, stepped_param))
+
+        else:
+            updates = [
+                (param, param - learning_rate * gparam)
+                for param, gparam in zip(self.params, gparams)
+            ]
 
         # gradients1 = gparams[0]
         # gradients2 = gparams[2]
@@ -895,6 +918,8 @@ def training_function(config):
     l1_reg = config['l1_reg']
 
     use_dropout = config['use_dropout']
+    dropout_rate = config['dropout_rate']
+    max_col_norm = config['max_col_norm']
 
     doPretrain = config['doPretrain']
     doFinetune = config['doFinetune']
@@ -923,7 +948,9 @@ def training_function(config):
                        activation=activation,
                        classifier=classifier,
                        polarity_split=polarity_split,
-                       use_dropout=use_dropout
+                       use_dropout=use_dropout,
+                       dropout_rate=dropout_rate,
+                       max_col_norm=max_col_norm
                        )
 
     # save parameters of net
@@ -979,6 +1006,17 @@ def training_function(config):
 
         if isFirstTimePretrain:
 
+            with open('pretrain_data.csv', 'a+') as f:
+                mywrite = csv.writer(f)
+                mywrite.writerow(['pretrain_loss',
+                                  'NSPL_{}'.format(NSPL),
+                                  'sparsity_{}'.format(sparsity_rate),
+                                  'hidden_{}'.format(hidden_layer_size),
+                                  'batchsize_{}'.format(pretrain_batch_size),
+                                  'lr_{}'.format(pretrain_lr)
+                                  ]
+                                 )
+
             print 'The first time to pretrain!'
             with open('log', 'a+') as f:
                 print >> f, 'The first time to pretrain!'
@@ -1028,6 +1066,10 @@ def training_function(config):
                     print abs(np.asarray(gradients)).sum()
 
                 loss = np.mean(minibatch_error)
+
+                with open('pretrain_data.csv', 'a+') as f:
+                    mywrite = csv.writer(f)
+                    mywrite.writerow([loss])
 
                 print 'The loss of epoch {0} is {1}'.format(epoch, loss)
                 with open('log', 'a+') as f:
@@ -1143,6 +1185,11 @@ def training_function(config):
                     print abs(np.asarray(gradients)).sum()
 
                 loss = np.mean(minibatch_error)
+
+                with open('pretrain_data.csv', 'a+') as f:
+                    mywrite = csv.writer(f)
+                    mywrite.writerow([loss])
+
                 print 'The loss of epoch {0} is {1}'.format(epoch, loss)
                 with open('log', 'a+') as f:
                     print >> f, 'The loss of epoch {0} is {1}'.format(epoch, loss)
@@ -1277,7 +1324,7 @@ def training_function(config):
 
         # shared_test_x = theano.shared(np.ones((ntest * 27 * 27, n_in), dtype=theano.config.floatX), borrow=True)
 
-        best_test_loss = np.inf
+        best_test_error = np.inf
 
         if isFirstTimeFinetune:
 
@@ -1290,7 +1337,11 @@ def training_function(config):
 
                 with open(parameters_dir + 'current_pretrain_params.save') as f:
                     pas = cPickle.load(f)
-                    params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
+
+                    if use_dropout:
+                        params = [np.asarray(pa, dtype=theano.config.floatX) / (1 - dropout_rate) for pa in pas]
+                    else:
+                        params = [np.asarray(pa, dtype=theano.config.floatX) for pa in pas]
 
                     for pa, param in zip(params, net.pretrain_params):
                         param.set_value(pa)
@@ -1317,6 +1368,23 @@ def training_function(config):
                 #     param.set_value(pa)
 
             for i in range(len(finetune_lr)):
+
+                with open('finetune_data.csv', 'a+') as f:
+                    mywrite = csv.writer(f)
+                    mywrite.writerow(['test_error',
+                                      'train_error',
+                                      'train_loss',
+                                      'lr_{}'.format(finetune_lr[i]),
+                                      'polaritySplit_{}'.format(polarity_split),
+                                      'hidden_{}'.format(hidden_layer_size),
+                                      'batchsize_{}'.format(batch_size),
+                                      'weightDecay_{}'.format(l2_reg),
+                                      'useDropout_{}'.format(use_dropout),
+                                      'dropout_{}'.format(dropout_rate),
+                                      'maxColNorm_{}'.format(max_col_norm)
+                                      ]
+                                     )
+
                 print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
                 with open('log', 'a+') as f:
                     print >> f, '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
@@ -1379,7 +1447,7 @@ def training_function(config):
                     print 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
                     print 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
                     with open('log', 'a+') as f:
-                        print >> f, 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                        print >> f, 'Epoch {0}, Mean train error {1}%, {2}'.format(epoch, np.mean(train_errors) * 100, np.mean(train_errors))
                         print >> f, 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
 
                     print '... Testing...'
@@ -1397,18 +1465,22 @@ def training_function(config):
                                                          batch_size=batch_size
                                                          )
 
-                    test_losses = test_model(n_test_batches)
-                    this_test_loss = np.mean(test_losses)
-                    this_min_loss = np.min(test_losses)
+                    test_error = test_model(n_test_batches)
+                    this_test_error = np.mean(test_error)
+                    this_min_error = np.min(test_error)
 
-                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
-                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_error * 100)
+                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_error * 100)
                     with open('log', 'a+') as f:
-                        print >> f, '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
-                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                        print >> f, '... Epoch {0}, Mean test error {1}%, {2}'.format(epoch, this_test_error * 100, this_test_error)
+                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_error * 100)
 
-                    if this_test_loss < best_test_loss:
-                        best_test_loss = this_test_loss
+                    if this_test_error < best_test_error:
+                        best_test_error = this_test_error
+
+                    with open('finetune_data.csv', 'a+') as f:
+                        mywrite = csv.writer(f)
+                        mywrite.writerow([this_test_error, np.mean(train_errors), np.mean(loss)])
 
                     with open(parameters_dir + 'current_params.save', 'wb') as f:
                         temp = []
@@ -1474,6 +1546,24 @@ def training_function(config):
                 print 'The current fine tune learn rate is not in finetune_lr!'
 
             for i in range(len(finetune_lr)):
+
+                if epoch == 0:
+                    with open('finetune_data.csv', 'a+') as f:
+                        mywrite = csv.writer(f)
+                        mywrite.writerow(['test_error',
+                                          'train_error',
+                                          'train_loss',
+                                          'lr_{}'.format(finetune_lr[i]),
+                                          'polaritySplit_{}'.format(polarity_split),
+                                          'hidden_{}'.format(hidden_layer_size),
+                                          'batchsize_{}'.format(batch_size),
+                                          'weightDecay_{}'.format(l2_reg),
+                                          'useDropout_{}'.format(use_dropout),
+                                          'dropout_{}'.format(dropout_rate),
+                                          'maxColNorm_{}'.format(max_col_norm)
+                                          ]
+                                         )
+
                 print '...... for finetune_learning_rate_{0}: {1}'.format(i, finetune_lr[i])
                 print '... getting the finetuning functions'
 
@@ -1540,7 +1630,7 @@ def training_function(config):
                     print 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
                     print 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
                     with open('log', 'a+') as f:
-                        print >> f, 'Epoch {0}, Mean train error {1}%'.format(epoch, np.mean(train_errors) * 100)
+                        print >> f, 'Epoch {0}, Mean train error {1}%, {2}'.format(epoch, np.mean(train_errors) * 100, np.mean(train_errors))
                         print >> f, 'Epoch {0}, Minimum train error {1}%'.format(epoch, np.min(train_errors) * 100)
 
                     print '... Testing...'
@@ -1558,17 +1648,21 @@ def training_function(config):
                                                          batch_size=batch_size
                                                          )
 
-                    test_losses = test_model(n_test_batches)
-                    this_test_loss = np.mean(test_losses)
-                    this_min_loss = np.min(test_losses)
-                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
-                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                    test_error = test_model(n_test_batches)
+                    this_test_error = np.mean(test_error)
+                    this_min_error = np.min(test_error)
+                    print '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_error * 100)
+                    print '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_error * 100)
                     with open('log', 'a+') as f:
-                        print >> f, '... Epoch {0}, Mean test error {1}%'.format(epoch, this_test_loss * 100)
-                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_loss * 100)
+                        print >> f, '... Epoch {0}, Mean test error {1}%, {2}'.format(epoch, this_test_error * 100, this_test_error)
+                        print >> f, '... Epoch {0}, Minimum test error {1}%'.format(epoch, this_min_error * 100)
 
-                    if this_test_loss < best_test_loss:
-                        best_test_loss = this_test_loss
+                    if this_test_error < best_test_error:
+                        best_test_error = this_test_error
+
+                    with open('finetune_data.csv', 'a+') as f:
+                        mywrite = csv.writer(f)
+                        mywrite.writerow([this_test_error, np.mean(train_errors), np.mean(loss)])
 
                     with open(parameters_dir + 'current_params.save', 'wb') as f:
                         tmp = []
